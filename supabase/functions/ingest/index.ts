@@ -3,18 +3,15 @@
 // tracks surge events and sends WhatsApp alerts through Zernio.
 //
 // Deploy:  supabase functions deploy ingest --no-verify-jwt
-// Secrets: supabase secrets set DEVICE_KEY=... ZERNIO_API_KEY=... ZERNIO_ACCOUNT_ID=... \
-//          ZERNIO_TEMPLATE_NAME=sasolsniff_alert ZERNIO_TEMPLATE_LANG=en ALERT_DRY_RUN=true
+// Secrets: DEVICE_KEY, ZERNIO_WHATSAPP_API_KEY, ZERNIO_ALERT_TEMPLATE_NAME,
+//          ZERNIO_ALERT_TEMPLATE_LANGUAGE, ALERT_DRY_RUN
 
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { queueSubscriberAlert, sendQueuedSubscriberAlerts } from "../_shared/zernio.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const DEVICE_KEY = Deno.env.get("DEVICE_KEY") ?? "";
-const ZERNIO_API_KEY = Deno.env.get("ZERNIO_API_KEY") ?? "";
-const ZERNIO_ACCOUNT_ID = Deno.env.get("ZERNIO_ACCOUNT_ID") ?? "";
-const TEMPLATE_NAME = Deno.env.get("ZERNIO_TEMPLATE_NAME") ?? "sasolsniff_alert";
-const TEMPLATE_LANG = Deno.env.get("ZERNIO_TEMPLATE_LANG") ?? "en";
 const ALERT_DRY_RUN = (Deno.env.get("ALERT_DRY_RUN") ?? "true") !== "false";
 const ALERT_MIN_SEVERITY = Deno.env.get("ALERT_MIN_SEVERITY") ?? "moderate";
 const ALERT_COOLDOWN_MIN = Number(Deno.env.get("ALERT_COOLDOWN_MIN") ?? "10");
@@ -243,22 +240,6 @@ function fuse(p: {
 // ---------- Zernio WhatsApp ----------
 const cleanParam = (s: string) => s.replace(/[\r\n\t]+/g, " ").replace(/ {2,}/g, " ").trim().slice(0, 300);
 
-async function sendWhatsApp(phone: string, params: string[]) {
-  const res = await fetch("https://zernio.com/api/v1/inbox/conversations", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${ZERNIO_API_KEY}`, "Content-Type": "application/json" },
-    body: JSON.stringify({
-      accountId: ZERNIO_ACCOUNT_ID,
-      participantId: phone.replace(/\D/g, ""),
-      templateName: TEMPLATE_NAME,
-      templateLanguage: TEMPLATE_LANG,
-      templateParams: params,
-    }),
-  });
-  const text = await res.text();
-  return { ok: res.ok, status: res.status, body: text.slice(0, 300) };
-}
-
 async function dispatchAlerts(ev: any, fusion: any, node: any, testMode: boolean) {
   const minRank = Math.max(1, SEVERITY.indexOf(ALERT_MIN_SEVERITY));
   if (fusion.severity_rank < minRank || fusion.severity_rank <= (ev.alerted_level ?? 0)) return [];
@@ -266,9 +247,6 @@ async function dispatchAlerts(ev: any, fusion: any, node: any, testMode: boolean
   const since = new Date(Date.now() - ALERT_COOLDOWN_MIN * 60_000).toISOString();
   const { data: recent } = await sb.from("alerts").select("id").eq("node_id", node.id).gte("created_at", since).limit(1);
   if (recent && recent.length) return []; // cooldown active, retry on a later reading
-
-  const { data: recips } = await sb.from("alert_recipients").select("*").eq("active", true)
-    .or(`node_id.is.null,node_id.eq.${node.id}`);
 
   const params = [
     cleanParam(node.name),
@@ -279,34 +257,59 @@ async function dispatchAlerts(ev: any, fusion: any, node: any, testMode: boolean
   ];
   const preview = `SasolSniff air alert for ${params[0]}: ${params[1]} pollution surge detected. Probable source: ${params[2]}. Wind from ${params[3]}. ${params[4]} This is an early-warning estimate, not a confirmed cause.`;
 
-  const rows: any[] = [];
-  for (const r of recips ?? []) {
-    let status = "dry_run";
-    let code: number | null = null;
-    if (!ALERT_DRY_RUN) {
-      try {
-        const out = await sendWhatsApp(r.phone, params);
-        status = out.ok ? "sent" : "failed";
-        code = out.status;
-        if (!out.ok) console.error("Zernio error", out.status, out.body);
-      } catch (e) {
-        status = "failed";
-        console.error("Zernio exception", e);
-      }
-    }
-    rows.push({
-      event_id: ev.id, node_id: node.id, recipient_id: r.id, recipient_name: r.name, group_type: r.group_type,
-      channel: "whatsapp", status, severity: fusion.severity, message: preview, provider_status: code,
+  const { data: subscribers, error: subscribersError } = await sb.from("subscribers")
+    .select("id,phone").eq("status", "active");
+  if (subscribersError) throw new Error("Could not load active WhatsApp subscribers");
+
+  const dryRun = ALERT_DRY_RUN || testMode;
+  const alertRows: Array<Record<string, unknown>> = (subscribers ?? []).map((subscriber: { id: number }) => ({
+    event_id: ev.id,
+    node_id: node.id,
+    subscriber_id: subscriber.id,
+    recipient_name: "WhatsApp subscriber",
+    channel: "whatsapp",
+    status: dryRun ? "dry_run" : "pending",
+    severity: fusion.severity,
+    message: preview,
+  }));
+  if (alertRows.length === 0) {
+    alertRows.push({
+      event_id: ev.id,
+      node_id: node.id,
+      subscriber_id: null,
+      recipient_name: "(no opted-in subscribers)",
+      channel: "whatsapp",
+      status: "dry_run",
+      severity: fusion.severity,
+      message: preview,
     });
   }
-  // no recipients yet: still log one preview row so the dashboard can show the alert
-  if (!rows.length) {
-    rows.push({ event_id: ev.id, node_id: node.id, recipient_name: "(no recipients configured)", channel: "whatsapp",
-      status: "dry_run", severity: fusion.severity, message: preview });
+  const { data: insertedAlerts, error: alertError } = await sb.from("alerts")
+    .insert(alertRows).select("id,subscriber_id");
+  if (alertError) throw new Error("Could not record WhatsApp alert");
+
+  const alertIdBySubscriber: Record<number, number> = {};
+  for (const alert of insertedAlerts ?? []) {
+    if (alert.subscriber_id != null) alertIdBySubscriber[alert.subscriber_id] = alert.id;
   }
-  await sb.from("alerts").insert(rows);
-  await sb.from("events").update({ alerted_level: fusion.severity_rank, alerted_at: new Date().toISOString() }).eq("id", ev.id);
-  return rows;
+  try {
+    const deliveries = await queueSubscriberAlert(sb, preview, {
+      eventId: ev.id,
+      severityRank: fusion.severity_rank,
+      alertIdBySubscriber,
+      dryRun,
+    });
+    const { error: eventError } = await sb.from("events")
+      .update({ alerted_level: fusion.severity_rank, alerted_at: new Date().toISOString() })
+      .eq("id", ev.id);
+    if (eventError) throw new Error("Could not update alert escalation state");
+    if (deliveries.length) EdgeRuntime.waitUntil(sendQueuedSubscriberAlerts(sb, deliveries));
+  } catch (error) {
+    const alertIds = (insertedAlerts ?? []).map((alert: { id: number }) => alert.id);
+    if (alertIds.length) await sb.from("alerts").update({ status: "failed" }).in("id", alertIds);
+    throw error;
+  }
+  return insertedAlerts ?? [];
 }
 
 // ---------- handler ----------

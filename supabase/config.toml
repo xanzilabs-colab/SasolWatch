@@ -2,3 +2,9 @@ project_id = "sasolsniff"
 
 [functions.ingest]
 verify_jwt = false
+
+[functions.zernio-webhook]
+verify_jwt = false
+
+[functions.zernio-admin]
+verify_jwt = false

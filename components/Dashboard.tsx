@@ -539,7 +539,7 @@ export function Dashboard({
             <div className="filter-toolbar">
               <label><span>Event status</span><select value={eventFilter} onChange={(event) => setEventFilter(event.target.value)}><option value="all">All events</option><option value="open">Open</option><option value="closed">Closed</option></select></label>
               <label><span>Severity</span><select value={severityFilter} onChange={(event) => setSeverityFilter(event.target.value)}><option value="all">All severities</option><option value="low">Low</option><option value="moderate">Moderate</option><option value="high">High</option><option value="severe">Severe</option></select></label>
-              <label><span>Alert status</span><select value={alertFilter} onChange={(event) => setAlertFilter(event.target.value)}><option value="all">All alerts</option><option value="sent">Sent</option><option value="dry_run">Preview</option><option value="failed">Failed</option></select></label>
+              <label><span>Alert status</span><select value={alertFilter} onChange={(event) => setAlertFilter(event.target.value)}><option value="all">All alerts</option><option value="pending">Pending</option><option value="sent">Sent</option><option value="dry_run">Preview</option><option value="failed">Failed</option></select></label>
               <span className="filter-count">{filteredEvents.length} events · {filteredAlerts.length} alerts</span>
             </div>
             <div className="content-grid">

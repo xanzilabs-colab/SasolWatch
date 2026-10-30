@@ -139,7 +139,7 @@ export interface AlertRow {
   recipient_name: string | null;
   group_type: string | null;
   channel: string;
-  status: "sent" | "failed" | "dry_run";
+  status: "sent" | "failed" | "dry_run" | "pending";
   severity: Severity | null;
   message: string | null;
   provider_status: number | null;

@@ -20,7 +20,7 @@ export function AlertsFeed({ alerts, simulated }: { alerts: AlertRow[]; simulate
               <button className="alert-summary" onClick={() => setExpanded(expanded === alert.id ? null : alert.id)}>
                 <span className="alert-type-icon"><MessageSquareText size={15} /></span>
                 <span className="alert-recipient"><strong>{alert.recipient_name ?? "Community recipient"}</strong><small>{alert.group_type ?? "community"} · {formattedTime(alert.created_at)}</small></span>
-                <span className={`alert-status alert-${alert.status}`}>{alert.status === "sent" ? "SENT" : alert.status === "failed" ? "FAILED" : "PREVIEW"}</span>
+                <span className={`alert-status alert-${alert.status}`}>{alert.status === "sent" ? "SENT" : alert.status === "failed" ? "FAILED" : alert.status === "pending" ? "PENDING" : "PREVIEW"}</span>
                 <ChevronDown size={14} className={expanded === alert.id ? "chevron-open" : ""} />
               </button>
               {expanded === alert.id && <p className="alert-message">{alert.message ?? "No message preview available."}</p>}

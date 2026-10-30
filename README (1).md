@@ -17,13 +17,14 @@
    Write-Host "Copy this value into the firmware: $key"
    supabase secrets set --project-ref bfcckzvvxqzvctvfrscd "DEVICE_KEY=$key"
    supabase secrets set --project-ref bfcckzvvxqzvctvfrscd ALERT_DRY_RUN=true
-   supabase secrets set --project-ref bfcckzvvxqzvctvfrscd ZERNIO_API_KEY=YOUR_ZERNIO_API_KEY ZERNIO_ACCOUNT_ID=YOUR_ZERNIO_ACCOUNT_ID
-   supabase secrets set --project-ref bfcckzvvxqzvctvfrscd ZERNIO_TEMPLATE_NAME=sasolsniff_alert ZERNIO_TEMPLATE_LANG=en
    ```
 4. In `firmware/SasolSniffNode`, copy `secrets.example.h` to `secrets.h` and enter the Wi-Fi and device credentials locally. Never commit `secrets.h`.
-5. Deploy the function to the linked project (the device key protects it):
+5. Apply the tracked WhatsApp migration and deploy the functions:
    ```
+   supabase db push --project-ref bfcckzvvxqzvctvfrscd
    supabase functions deploy ingest --project-ref bfcckzvvxqzvctvfrscd --no-verify-jwt
+   supabase functions deploy zernio-webhook --project-ref bfcckzvvxqzvctvfrscd --no-verify-jwt
+   supabase functions deploy zernio-admin --project-ref bfcckzvvxqzvctvfrscd --no-verify-jwt
    ```
 
 Do not send made-up readings to the deployed ingest endpoint for testing; each accepted payload is stored as a device reading and can create a real event. Use **Run scenario** in the dashboard for local-only previews.
@@ -36,20 +37,19 @@ Do not send made-up readings to the deployed ingest endpoint for testing; each a
 
 ## 2. WhatsApp alerts (Zernio)
 
-- `ALERT_DRY_RUN=true` logs alerts to the `alerts` table without sending. Switch to `false` only after a template is approved and a test number works.
-- WhatsApp only allows free-form messages inside 24 hours of the user's last message. Outside that, it needs an **approved template**. Create this one in Zernio and wait for approval (do it today, approval time varies):
-
-  Name: `sasolsniff_alert`, language `en`
-  ```
-  SasolSniff air alert for {{1}}: {{2}} pollution surge detected. Probable source: {{3}}. Wind from {{4}}. {{5}} This is an early-warning estimate, not a confirmed cause.
-  ```
-- The function starts the conversation with `POST https://zernio.com/api/v1/inbox/conversations` using `accountId`, `participantId` (digits only, country code included), `templateName`, `templateLanguage`, `templateParams`.
-- Zernio's docs describe limits on opening new conversations (a per-sender interval and warm-up caps). I could not confirm whether they apply to WhatsApp, so test with 2 or 3 phones before the demo. Add phones in `alert_recipients`, and get their consent.
-- Alerts fire when an event opens, and again if it escalates to a higher severity. `ALERT_MIN_SEVERITY` (default `moderate`) and `ALERT_COOLDOWN_MIN` (default 10) control it.
+- The `subscribers` table is private. People opt in by messaging `hello` or `alerts`; `STOP` and `unsubscribe` disable future alerts. Only active, opted-in subscribers are ever queued.
+- Configure Supabase secrets `ZERNIO_WHATSAPP_API_KEY`, `ZERNIO_WEBHOOK_SECRET`, and `ZERNIO_ADMIN_KEY`. Reuse the existing local `ZERNIO_WHATSAPP_API_KEY` value; do not put credentials in this repository. Keep `ALERT_DRY_RUN=true` until the WhatsApp account is connected and the template is approved.
+- Webhook endpoint: `https://<app-domain>/webhooks/zernio` (the Next.js route forwards the raw request to the signed Supabase Edge Function). If the app has no public domain yet, register `https://<project-ref>.supabase.co/functions/v1/zernio-webhook` directly.
+- The protected `zernio-admin` Edge Function supports `list_accounts`, `register_webhook`, `create_template`, and `send_alert` actions. Registration subscribes to `message.received`, `message.failed`, `account.disconnected`, and `whatsapp.template.status_updated`, then requests a `webhook.test`. Send the `x-admin-key` header; never expose this endpoint key in browser code.
+- Call the admin endpoint at `https://<project-ref>.supabase.co/functions/v1/zernio-admin` with JSON such as `{"action":"list_accounts"}` or `{"action":"register_webhook","publicUrl":"https://<app-domain>/webhooks/zernio"}`. Use `{"action":"create_template","accountId":"<connected-account-id>"}` after confirming the WhatsApp account is connected, and `{"action":"send_alert","text":"Test alert"}` for an opted-in test.
+- Create the utility template by calling the admin action with the connected WhatsApp `accountId`. It submits `alert_notification` (`en_US`) with body `SasolSniff air quality alert: {{1}}`. Meta approval is required before sends outside the 24-hour window can succeed.
+- Replies and alerts use free-form text only if the subscriber's last inbound message was within 24 hours; otherwise the approved template is used. Sends are sequential, paced by six seconds, and retried at most three times with backoff. `message.failed` events record provider error codes/reasons without retry loops.
+- Normal alerts are queued for active subscribers only; `ALERT_DRY_RUN=true` records previews without sending. Switch it to `false` only after account connection, template approval, and an opted-in test recipient. `ALERT_MIN_SEVERITY` (default `moderate`) and `ALERT_COOLDOWN_MIN` (default 10) control automatic alert thresholds.
+- Webhook payload ids are unique-deduplicated. Message text is redacted in logs and the saved sample; private processing text is cleared after successful handling.
 
 ## 3. What the frontend reads (Supabase Realtime + anon key)
 
-Subscribe to inserts on `readings`, and changes on `events` and `alerts`. Never read `alert_recipients` from the browser.
+Subscribe to inserts on `readings`, and changes on `events` and `alerts`. Never read `alert_recipients` or `subscribers` from the browser.
 
 `readings.fusion` (jsonb) contains the live analysis calculated from each actual device reading:
 

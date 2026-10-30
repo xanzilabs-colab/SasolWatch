@@ -221,7 +221,7 @@ a { color: inherit; text-decoration: none; }
 .alert-type-icon { color: #55cbd8; }.alert-recipient { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 4px; }
 .alert-recipient strong { color: #d4e0e8; font-size: 9px; }.alert-recipient small { color: #7e91a3; font-size: 7px; text-transform: capitalize; }
 .alert-status { padding: 4px 5px; border-radius: 5px; font-size: 6px; letter-spacing: .08em; font-weight: 800; }
-.alert-sent { color: #72e59a; background: #22c55e1c; }.alert-dry_run { color: #f2c56f; background: #f59e0b1c; }.alert-failed { color: #ff8585; background: #ef44441b; }
+.alert-sent { color: #72e59a; background: #22c55e1c; }.alert-dry_run { color: #f2c56f; background: #f59e0b1c; }.alert-failed { color: #ff8585; background: #ef44441b; }.alert-pending { color: #7dd3fc; background: #0ea5e91c; }
 .alert-summary > svg:last-child { color: #72879a; transition: transform .2s; }.chevron-open { transform: rotate(180deg); }
 .alert-message { color: #92a4b4; font-size: 8px; line-height: 1.5; margin: 0 0 9px 24px; padding: 8px; border-radius: 7px; background: #050d16; }
 
@@ -567,6 +567,7 @@ a { color: inherit; text-decoration: none; }
 .alert-sent { color: #14653c; background: #e4f3ea; }
 .alert-dry_run { color: #8a4a00; background: #fcf0dc; }
 .alert-failed { color: #9a1f18; background: #fbe6e4; }
+.alert-pending { color: #075985; background: #e0f2fe; }
 .alert-message { color: #435063; background: #f7f8fa; }
 .severity-text { color: #a85a00; }
 .severity-text.severity-high { color: #c45020; }
