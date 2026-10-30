@@ -7,7 +7,7 @@
 
 const char* INGEST_URL = "https://bfcckzvvxqzvctvfrscd.supabase.co/functions/v1/ingest";
 const char* NODE_ID = "sasolsniff-node-01";
-const char* FW_VERSION = "sasolsniff-fw-1.1";
+const char* FW_VERSION = "sasolsniff-fw-1.2";
 
 constexpr int MQ_PIN = 34;
 constexpr int WIND_PIN = 32;
@@ -217,7 +217,7 @@ void sendReading() {
   WiFiClientSecure client;
   client.setInsecure();
   HTTPClient http;
-  http.setTimeout(2500);
+  http.setTimeout(10000);
   if (!http.begin(client, INGEST_URL)) {
     Serial.println("HTTP begin failed");
     return;

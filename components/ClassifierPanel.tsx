@@ -44,10 +44,10 @@ export function ClassifierPanel({ fusion, active, simulated, reading }: { fusion
       ) : (
         <>
           <div className="classifier-result">
-            <div><small>ESTIMATED SOURCE</small><strong>{fusion.source_label}</strong></div>
-            <span>{Math.round(fusion.confidence * 100)}%</span>
+            <div><small>SOURCE HYPOTHESIS</small><strong>{fusion.source_label}</strong></div>
+            <span>{Math.round(fusion.confidence * 100)}% rule score</span>
           </div>
-          <p className="panel-caption">Estimated source, not proof.</p>
+          <p className="panel-caption">Rule-based hypothesis, not a measured pollutant or confirmed source. {fusion.surge_score == null ? "A surge score will appear with the next live reading." : `Surge score: ${fusion.surge_score}/100; ${fusion.surge_streak ?? 0} consecutive elevated readings (trigger at ${fusion.surge_score_threshold ?? 60}).`}</p>
           <div className="score-list">
             {scoreEntries.map(([key, score]) => (
               <div className="score-row" key={key}>

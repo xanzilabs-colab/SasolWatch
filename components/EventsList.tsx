@@ -15,7 +15,7 @@ export function EventsList({ events, simulated, now }: { events: EventRow[]; sim
               <article className="event-list-row" key={event.id}>
                 <span className={`event-severity-dot severity-${event.severity}`} />
                 <div className="event-list-copy">
-                  <strong>{event.source_type?.replaceAll("_", " ") ?? "Air quality event"}</strong>
+                  <strong>{event.source_type ? `Hypothesis: ${event.source_type.replaceAll("_", " ")}` : "Sensor response event"}</strong>
                   <small><Clock3 size={12} /> {new Date(event.started_at).toLocaleString("en-ZA", { dateStyle: "short", timeStyle: "short", timeZone: "Africa/Johannesburg" })} · {duration} min {event.test_mode && <b>· TEST</b>}</small>
                 </div>
                 <span className={`severity-text severity-${event.severity}`}>{event.severity}</span>

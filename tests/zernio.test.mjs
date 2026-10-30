@@ -14,6 +14,7 @@ import {
   verifyZernioSignature,
   whatsappDeliveryMode,
 } from "../supabase/functions/_shared/zernio.ts";
+import { evaluateSurge, SURGE_MIN_STREAK, SURGE_SCORE_THRESHOLD } from "../lib/surge-score.ts";
 
 test("validates the raw-body HMAC signature", async () => {
   const body = '{"id":"evt-1","event":"message.received"}';
@@ -77,4 +78,57 @@ test("sandbox uses its locked template without alert variables", () => {
   assert.deepEqual(alertTemplateConfig(false, {}), { name: "alert_notification", language: "en_US" });
   assert.deepEqual(alertTemplateParams(true, "Private alert detail"), []);
   assert.deepEqual(alertTemplateParams(false, "Alert detail"), ["Alert detail"]);
+});
+
+test("requires a sustained, scored sensor rise before opening a surge", () => {
+  const base = Date.parse("2026-10-30T07:34:00.000Z");
+  const sample = (seconds, gas, baseline = 1355.2) => ({
+    ts: new Date(base + seconds * 1000).toISOString(),
+    gas_raw: gas,
+    baseline_raw: baseline,
+  });
+  const previous = [sample(0, 1909), sample(1, 2074)];
+
+  const third = evaluateSurge({
+    gas: 1817,
+    baseline: 1355.2,
+    ts: new Date(base + 2000).toISOString(),
+    previous,
+    warming: false,
+    deviceSurge: true,
+  });
+  assert.equal(third.streak, SURGE_MIN_STREAK);
+  assert.equal(third.surge, true);
+  assert.ok(third.score >= SURGE_SCORE_THRESHOLD);
+
+  const isolatedSpike = evaluateSurge({
+    gas: 2074,
+    baseline: 1355.2,
+    ts: new Date(base + 1000).toISOString(),
+    previous: [],
+    warming: false,
+    deviceSurge: true,
+  });
+  assert.equal(isolatedSpike.surge, false);
+
+  const minorPersistentRise = evaluateSurge({
+    gas: 1700,
+    baseline: 1355.2,
+    ts: new Date(base + 2000).toISOString(),
+    previous: [sample(0, 1700), sample(1, 1700)],
+    warming: false,
+    deviceSurge: false,
+  });
+  assert.equal(minorPersistentRise.surge, false);
+
+  const interruptedRise = evaluateSurge({
+    gas: 1817,
+    baseline: 1355.2,
+    ts: new Date(base + 20_000).toISOString(),
+    previous,
+    warming: false,
+    deviceSurge: true,
+  });
+  assert.equal(interruptedRise.streak, 1);
+  assert.equal(interruptedRise.surge, false);
 });

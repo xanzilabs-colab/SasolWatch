@@ -19,11 +19,14 @@ export function AlertsFeed({ alerts, simulated }: { alerts: AlertRow[]; simulate
             <article className="alert-item" key={alert.id}>
               <button className="alert-summary" onClick={() => setExpanded(expanded === alert.id ? null : alert.id)}>
                 <span className="alert-type-icon"><MessageSquareText size={15} /></span>
-                <span className="alert-recipient"><strong>{alert.recipient_name ?? "Community recipient"}</strong><small>{alert.group_type ?? "community"} · {formattedTime(alert.created_at)}</small></span>
+                <span className="alert-recipient">
+                  <strong>{alert.recipient_name === "(no opted-in subscribers)" ? "No opted-in subscribers" : alert.recipient_name ?? "WhatsApp recipient"}</strong>
+                  <small>{alert.channel === "whatsapp" ? "WhatsApp" : alert.channel} · {alert.status === "dry_run" ? "preview · not sent" : alert.status} · {formattedTime(alert.created_at)}</small>
+                </span>
                 <span className={`alert-status alert-${alert.status}`}>{alert.status === "sent" ? "SENT" : alert.status === "failed" ? "FAILED" : alert.status === "pending" ? "PENDING" : "PREVIEW"}</span>
                 <ChevronDown size={14} className={expanded === alert.id ? "chevron-open" : ""} />
               </button>
-              {expanded === alert.id && <p className="alert-message">{alert.message ?? "No message preview available."}</p>}
+              {expanded === alert.id && <p className="alert-message">{alert.message ?? "No message preview available."}{alert.status === "dry_run" && <><br /><strong>Preview only; this message was not delivered.</strong></>}</p>}
             </article>
           ))}
         </div>

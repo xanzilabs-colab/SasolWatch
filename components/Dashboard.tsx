@@ -214,7 +214,7 @@ export function Dashboard({
     simulatorTick.current += 1;
 
     const active = eventRef.current;
-    if (next.fusion?.surge && (active?.status === "open" || previous?.surge)) {
+    if (next.fusion?.surge) {
       const event = simulatorEvent(next, active?.started_at ?? next.ts);
       if (event) {
         eventRef.current = event;
@@ -275,7 +275,7 @@ export function Dashboard({
         ? activeEvent.summary : null;
   const online = simulatorMode
     ? simulatorRunning && Boolean(latest)
-    : Boolean(latest && now - Date.parse(latest.received_at) < 15000);
+    : Boolean(latest && now > 0 && now - Date.parse(latest.received_at) >= 0 && now - Date.parse(latest.received_at) < 15000);
   const warming = latest?.warming_up ?? false;
   const time = now === 0 ? "--:--:--" : new Intl.DateTimeFormat("en-ZA", {
     timeZone: "Africa/Johannesburg",
@@ -322,8 +322,10 @@ export function Dashboard({
     warming_up: reading.warming_up,
     test_mode: reading.test_mode,
     severity: reading.fusion?.severity,
-    source_estimate: reading.fusion?.source_label,
-    confidence: reading.fusion?.confidence,
+    surge_score: reading.fusion?.surge_score,
+    surge_streak: reading.fusion?.surge_streak,
+    source_hypothesis: reading.fusion?.source_label,
+    source_rule_score: reading.fusion?.confidence,
   })));
   const exportEvents = () => downloadCsv("sasolsniff-events.csv", filteredEvents.map((event) => ({
     id: event.id,
@@ -333,8 +335,9 @@ export function Dashboard({
     ended_at: event.ended_at,
     severity: event.severity,
     peak_gas_raw: event.peak_gas_raw,
-    source_estimate: event.summary?.source_label,
-    confidence: event.confidence,
+    surge_score: event.summary?.surge_score,
+    source_hypothesis: event.summary?.source_label,
+    source_rule_score: event.confidence,
     test_mode: event.test_mode,
   })));
   const exportAlerts = () => downloadCsv("sasolsniff-alerts.csv", filteredAlerts.map((alert) => ({
@@ -396,7 +399,7 @@ export function Dashboard({
   const canExportReadings = readings.length > 0;
   const headerStatus = simulatorMode
     ? simulatorRunning ? "Simulator running" : "Simulator paused"
-    : online ? "Station online" : "Station offline";
+    : online ? "Station online" : latest ? "Data stale" : "Station offline";
   const projectUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
   const supabaseConnected = Boolean(projectUrl && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
 
@@ -448,11 +451,13 @@ export function Dashboard({
 
   const overviewContent = (
     <>
-      {fusion?.surge || activeEvent ? (
+      {online && (fusion?.surge || activeEvent) ? (
         <div className={`station-notice notice-${severity}`}>
           <AlertTriangle size={18} />
-          <div><strong>{activeEvent ? "Active air-quality event" : "Elevated sensor response"}</strong><span>{fusion?.guidance ?? "Review the wind sector and readings; this estimate is not confirmed source attribution."}</span></div>
+          <div><strong>{activeEvent ? "Sustained sensor-response event" : "Elevated sensor response"}</strong><span>{fusion?.guidance ?? "Review the wind sector and readings; this estimate is not confirmed source attribution."}</span></div>
         </div>
+      ) : latest && !online && !simulatorMode ? (
+        <div className="station-notice notice-warning"><SignalZero size={18} /><div><strong>Last device reading is stale</strong><span>Showing the last sensor data received at {formatSast(latest.received_at)}. No update has arrived in the last 15 seconds; this is stored device data, not a live reading.</span></div><button className="toolbar-button" onClick={() => void live.refresh()}><RefreshCw size={14} /> Retry</button></div>
       ) : live.error && !simulatorMode ? (
         <div className="station-notice notice-warning"><AlertTriangle size={18} /><div><strong>Dashboard data is unavailable.</strong><span>{live.error}</span></div><button className="toolbar-button" onClick={() => void live.refresh()}><RefreshCw size={14} /> Retry</button></div>
       ) : !online && !simulatorMode ? (
@@ -464,11 +469,12 @@ export function Dashboard({
       )}
       {demoMode && <DemoPlaybook latest={simulatorMode ? null : latest} />}
       <section className="status-strip" aria-label="Station summary">
-        <MetricCard label="Station" value={online ? "Online" : simulatorMode ? "Simulator" : "Offline"} detail={`${node.name} · Sasolburg`} state={online ? "good" : "neutral"} />
+        <MetricCard label="Station" value={online ? "Online" : simulatorMode ? "Simulator" : latest ? "Stale" : "Offline"} detail={`${node.name} · Sasolburg`} state={online ? "good" : latest ? "warning" : "neutral"} />
         {simulatorMode
           ? <MetricCard label="Indicative AQI · simulated" value={indicativeAqi ?? "—"} detail={aqiBand} state={indicativeAqi == null ? "neutral" : indicativeAqi >= 100 ? "warning" : "good"} />
           : <MetricCard label="Wind potentiometer" value={latest?.wind_raw ?? "—"} detail="Raw ADC · expected range 0–4095" />}
         <MetricCard label="Gas response" value={<>{latestReading?.gas_raw.toLocaleString() ?? "—"}<small> raw</small></>} detail={fusion ? `Rise ${Math.round(fusion.rise)} · threshold ${Math.round(fusion.threshold)}` : "Awaiting sensor data"} state={fusion?.surge ? "critical" : latestReading ? "good" : "neutral"} />
+        <MetricCard label="Surge score" value={fusion?.surge_score == null ? "—" : `${fusion.surge_score}/100`} detail={fusion?.surge_score == null ? "Awaiting scored sensor reading" : `${Math.min(fusion.surge_streak ?? 0, 3)}/3 consecutive · trigger ${fusion.surge_score_threshold ?? 60}`} state={fusion?.surge ? "critical" : fusion?.surge_score != null && fusion.surge_score >= (fusion.surge_score_threshold ?? 60) ? "warning" : "neutral"} />
         <MetricCard label="Wind · from" value={windFromLabel} detail={simulatorMode ? "Local scenario direction" : latest?.wind_raw == null ? "Waiting for potentiometer ADC" : `Device potentiometer · ADC ${latest.wind_raw}`} />
         <MetricCard label="Upwind sector" value={active && fusion && windFromDeg != null ? `${compassDirection(windFromDeg)} ±${fusion.wind.sector_halfwidth_deg}°` : "—"} detail={active ? "Screening sector from device wind direction" : "No active surge"} state={active ? "warning" : "neutral"} />
         <MetricCard label="Events · alerts" value={`${events.length} · ${alerts.length}`} detail="Recorded for this node" state={alerts.length ? "warning" : "neutral"} />
@@ -568,7 +574,7 @@ export function Dashboard({
         return (
           <>
             <div className="status-strip device-status-strip">
-              <MetricCard label="Connection" value={online ? "Connected" : "Offline"} detail={simulatorMode ? "Local simulator" : online ? "Latest reading is current" : "Waiting for device data"} state={online ? "good" : "neutral"} />
+              <MetricCard label="Connection" value={online ? "Connected" : simulatorMode ? "Simulator" : latest ? "Stale" : "Offline"} detail={simulatorMode ? "Local simulator" : online ? "Latest reading is current" : latest ? "Last device reading is older than 15 seconds" : "No device reading received"} state={online ? "good" : latest ? "warning" : "neutral"} />
               <MetricCard label="Last reading" value={latest ? formatSast(latest.received_at) : "—"} detail="South Africa Standard Time" />
               <MetricCard label="Firmware" value={latest?.fw ?? "—"} detail={latest ? "Reported by device" : "No firmware report"} />
               <MetricCard label="Wi-Fi signal" value={latest?.rssi == null ? "—" : `${latest.rssi} dBm`} detail={latest?.rssi == null ? "No signal data received" : "Reported by device"} />
@@ -658,7 +664,7 @@ export function Dashboard({
   })();
 
   return (
-    <div className={`app-frame ${fusion?.surge || activeEvent ? `surge-glow severity-${severity}` : ""} ${simulatorMode ? "simulator-active" : ""}`}>
+    <div className={`app-frame ${online && (fusion?.surge || activeEvent) ? `surge-glow severity-${severity}` : ""} ${simulatorMode ? "simulator-active" : ""}`}>
       {mobileNavOpen && <button className="nav-scrim" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)} />}
       <header className="app-topbar">
         <button className="mobile-menu-button" aria-label="Toggle navigation" aria-expanded={mobileNavOpen} onClick={() => setMobileNavOpen((open) => !open)}>{mobileNavOpen ? <X size={19} /> : <Menu size={19} />}</button>

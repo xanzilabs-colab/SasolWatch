@@ -8,15 +8,20 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { queueSubscriberAlert, sendQueuedSubscriberAlerts } from "../_shared/zernio.ts";
+import { evaluateSurge, SURGE_SCORE_THRESHOLD } from "../../../lib/surge-score.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
 const SERVICE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const DEVICE_KEY = Deno.env.get("DEVICE_KEY") ?? "";
 const ALERT_DRY_RUN = (Deno.env.get("ALERT_DRY_RUN") ?? "true") !== "false";
 const ALERT_MIN_SEVERITY = Deno.env.get("ALERT_MIN_SEVERITY") ?? "moderate";
+const ALERT_MIN_SURGE_SCORE = Number(Deno.env.get("ALERT_MIN_SURGE_SCORE") ?? "65");
 const ALERT_COOLDOWN_MIN = Number(Deno.env.get("ALERT_COOLDOWN_MIN") ?? "10");
 const OPENWEATHER_API_KEY = Deno.env.get("OPENWEATHER_API_KEY") ?? Deno.env.get("OPEN_METEO_API_KEY") ?? "";
 const WEATHER_TTL_MIN = Number(Deno.env.get("WEATHER_TTL_MIN") ?? "10");
+if (!Number.isFinite(ALERT_MIN_SURGE_SCORE) || ALERT_MIN_SURGE_SCORE < SURGE_SCORE_THRESHOLD || ALERT_MIN_SURGE_SCORE > 100) {
+  throw new Error("ALERT_MIN_SURGE_SCORE must be a number from 60 to 100");
+}
 
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
 
@@ -127,16 +132,20 @@ const GUIDANCE: Record<string, string> = {
 
 function fuse(p: {
   gas: number; baseline: number; warming: boolean; temp: number | null; rh: number | null;
-  windFrom: number; ts: Date; prev: any[]; node: any; sources: any[]; weather: any | null;
+  windFrom: number; ts: Date; prev: any[]; node: any; sources: any[]; weather: any | null; deviceSurge: boolean;
 }) {
   const { gas, baseline, warming, temp, rh, windFrom, ts, prev, node, sources, weather } = p;
 
-  const rise = gas - baseline;
-  const threshold = Math.max(150, baseline * 0.25);
-  const surge = !warming && rise > threshold;
+  const surgeResult = evaluateSurge({
+    gas,
+    baseline,
+    ts: ts.toISOString(),
+    previous: prev,
+    warming,
+    deviceSurge: p.deviceSurge,
+  });
+  const { rise, threshold, surge, severityRank: sevRank } = surgeResult;
   const intensity = rise > 0 ? clamp(rise / Math.max(800, 4095 - baseline), 0, 1) : 0;
-  let sevRank = 0;
-  if (surge) sevRank = intensity < 0.12 ? 1 : intensity < 0.3 ? 2 : intensity < 0.55 ? 3 : 4;
 
   // onset sharpness from the last few readings
   let slope = 0;
@@ -212,6 +221,9 @@ function fuse(p: {
     simulated: false,
     method: "rule-based fusion v2 verified sources",
     surge, severity, severity_rank: sevRank,
+    surge_score: surgeResult.score,
+    surge_streak: surgeResult.streak,
+    surge_score_threshold: SURGE_SCORE_THRESHOLD,
     intensity: Math.round(intensity * 1000) / 1000,
     rise: Math.round(rise), threshold: Math.round(threshold),
     slope_per_s: Math.round(slope * 10) / 10, sharpness: Math.round(sharp * 100) / 100,
@@ -242,11 +254,14 @@ const cleanParam = (s: string) => s.replace(/[\r\n\t]+/g, " ").replace(/ {2,}/g,
 
 async function dispatchAlerts(ev: any, fusion: any, node: any, testMode: boolean) {
   const minRank = Math.max(1, SEVERITY.indexOf(ALERT_MIN_SEVERITY));
-  if (fusion.severity_rank < minRank || fusion.severity_rank <= (ev.alerted_level ?? 0)) return [];
+  if (fusion.surge_score < ALERT_MIN_SURGE_SCORE || fusion.severity_rank < minRank ||
+    fusion.severity_rank <= (ev.alerted_level ?? 0)) return [];
 
   const since = new Date(Date.now() - ALERT_COOLDOWN_MIN * 60_000).toISOString();
-  const { data: recent } = await sb.from("alerts").select("id").eq("node_id", node.id).gte("created_at", since).limit(1);
-  if (recent && recent.length) return []; // cooldown active, retry on a later reading
+  const { data: recent, error: recentError } = await sb.from("alerts").select("id")
+    .eq("node_id", node.id).in("status", ["sent", "pending"]).gte("created_at", since).limit(1);
+  if (recentError) throw new Error("Could not check the WhatsApp alert cooldown");
+  if (recent?.length) return [];
 
   const params = [
     cleanParam(node.name),
@@ -255,7 +270,10 @@ async function dispatchAlerts(ev: any, fusion: any, node: any, testMode: boolean
     cleanParam(fusion.wind.compass_from),
     cleanParam(fusion.guidance),
   ];
-  const preview = `SasolSniff air alert for ${params[0]}: ${params[1]} pollution surge detected. Probable source: ${params[2]}. Wind from ${params[3]}. ${params[4]} This is an early-warning estimate, not a confirmed cause.`;
+  const weatherDetail = fusion.weather
+    ? `Local weather: wind ${fusion.weather.wind_speed_ms ?? "unavailable"} m/s, precipitation ${fusion.weather.precipitation_mm ?? "unavailable"} mm.`
+    : "Local weather is unavailable.";
+  const preview = `SasolSniff ${params[1]} sensor alert for ${params[0]}. Surge score ${fusion.surge_score}/100 (${fusion.surge_streak} consecutive readings); raw response +${fusion.rise} ADC over a ${fusion.threshold} ADC trigger threshold. Wind from ${params[3]} (${fusion.wind.from_deg}°), flow toward ${fusion.wind.compass_to} (${fusion.wind.to_deg}°). ${weatherDetail} Source hypothesis: ${params[2]} (${Math.round(fusion.confidence * 100)}% rule score; unverified). ${params[4]} MQ raw response is not a calibrated pollutant concentration.`;
 
   const { data: subscribers, error: subscribersError } = await sb.from("subscribers")
     .select("id,phone").eq("status", "active");
@@ -356,7 +374,7 @@ Deno.serve(async (req) => {
   if (!node) return json({ error: "node lookup failed" }, 500);
 
   const { data: histDesc } = await sb.from("readings")
-    .select("ts,gas_raw,wind_from_deg,surge,test_mode").eq("node_id", nodeId).order("ts", { ascending: false }).limit(30);
+    .select("ts,gas_raw,baseline_raw,wind_from_deg,surge,test_mode").eq("node_id", nodeId).order("ts", { ascending: false }).limit(30);
   const prev = (histDesc ?? []).filter((reading) => !reading.test_mode).slice(0, 12).reverse();
   const { data: sources, error: sourcesError } = await sb.from("sources").select("*").eq("illustrative", false);
   if (sourcesError) return json({ error: "source lookup failed" }, 500);
@@ -368,15 +386,16 @@ Deno.serve(async (req) => {
   const fusion = fuse({
     gas, baseline, warming, temp: temperature, rh: humidity,
     windFrom, ts, prev, node, sources: (sources ?? []).filter((source: any) => !source.illustrative), weather,
+    deviceSurge: !!b.device_surge,
   });
 
-  // event tracking: open after 2 consecutive surge readings, close after 2 consecutive clear readings
+  // The fusion score already requires three consecutive elevated readings.
   const prevSurge = !!prev[prev.length - 1]?.surge;
   const { data: openEv } = await sb.from("events").select("*").eq("node_id", nodeId).eq("status", "open")
     .order("started_at", { ascending: false }).limit(1).maybeSingle();
   let ev: any = openEv;
 
-  if (!ev && fusion.surge && prevSurge) {
+  if (!ev && fusion.surge) {
     const ins = await sb.from("events").insert({
       node_id: nodeId, started_at: ts.toISOString(), peak_gas_raw: gas, peak_intensity: fusion.intensity,
       severity: fusion.severity, severity_rank: fusion.severity_rank, source_type: fusion.source_type,
@@ -420,6 +439,7 @@ Deno.serve(async (req) => {
 
   return json({
     ok: true, surge: fusion.surge, severity: fusion.severity, event_id: ev?.id ?? null,
+    surge_score: fusion.surge_score, surge_streak: fusion.surge_streak,
     wind_raw: windRaw, wind_from_deg: windFrom, compass_from: compass(windFrom),
     source_type: fusion.source_type, alerts: alertRows.length,
   });

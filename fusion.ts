@@ -1,3 +1,5 @@
+import { evaluateSurge, SURGE_SCORE_THRESHOLD } from "./lib/surge-score";
+
 // lib/fusion.ts
 // SasolSniff fusion engine. This is the SAME logic the Supabase edge function runs.
 // The dashboard only uses it for (a) types and (b) the clearly labelled SIMULATOR mode.
@@ -75,16 +77,21 @@ export function fuse(p: {
   gas: number; baseline: number; warming: boolean; temp: number | null; rh: number | null;
   windFrom: number; ts: Date; prev: any[]; node: any; sources: any[]; weather: any | null;
   simulated?: boolean;
+  deviceSurge?: boolean;
 }) {
   const { gas, baseline, warming, temp, rh, windFrom, ts, prev, node, sources, weather } = p;
   const simulated = p.simulated ?? false;
 
-  const rise = gas - baseline;
-  const threshold = Math.max(150, baseline * 0.25);
-  const surge = !warming && rise > threshold;
+  const surgeResult = evaluateSurge({
+    gas,
+    baseline,
+    ts: ts.toISOString(),
+    previous: prev,
+    warming,
+    deviceSurge: p.deviceSurge ?? false,
+  });
+  const { rise, threshold, surge, severityRank: sevRank } = surgeResult;
   const intensity = rise > 0 ? clamp(rise / Math.max(800, 4095 - baseline), 0, 1) : 0;
-  let sevRank = 0;
-  if (surge) sevRank = intensity < 0.12 ? 1 : intensity < 0.3 ? 2 : intensity < 0.55 ? 3 : 4;
 
   // onset sharpness from the last few readings
   let slope = 0;
@@ -170,6 +177,9 @@ export function fuse(p: {
     simulated,
     method: "rule-based fusion v1",
     surge, severity, severity_rank: sevRank,
+    surge_score: surgeResult.score,
+    surge_streak: surgeResult.streak,
+    surge_score_threshold: SURGE_SCORE_THRESHOLD,
     intensity: Math.round(intensity * 1000) / 1000,
     rise: Math.round(rise), threshold: Math.round(threshold),
     slope_per_s: Math.round(slope * 10) / 10, sharpness: Math.round(sharp * 100) / 100,

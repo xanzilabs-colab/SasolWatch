@@ -63,6 +63,9 @@ export interface Fusion {
   surge: boolean;
   severity: Severity;
   severity_rank: number;
+  surge_score?: number;
+  surge_streak?: number;
+  surge_score_threshold?: number;
   intensity: number;
   rise: number;
   threshold: number;

@@ -51,7 +51,7 @@ export function Timeline({
                 content={({ active, payload, label }) => {
                   if (!active || !payload?.length) return null;
                   const point = payload[0]?.payload as (typeof data)[number] | undefined;
-                  return <div className="chart-tooltip"><small>{label ? new Date(String(label)).toLocaleString() : ""}</small><b>Gas raw · {point?.gas?.toLocaleString()}</b><span>Baseline · {point?.baseline?.toLocaleString()}</span><span>Threshold · {point?.threshold?.toLocaleString()}</span>{point?.fusion?.surge && <em>{point.fusion.source_label} · {Math.round(point.fusion.confidence * 100)}% estimate</em>}</div>;
+                  return <div className="chart-tooltip"><small>{label ? new Date(String(label)).toLocaleString() : ""}</small><b>Gas raw · {point?.gas?.toLocaleString()}</b><span>Baseline · {point?.baseline?.toLocaleString()}</span><span>Threshold · {point?.threshold?.toLocaleString()}</span>{point?.fusion?.surge && <em>Surge score {point.fusion.surge_score ?? "—"}/100 · hypothesis: {point.fusion.source_label}</em>}</div>;
                 }}
               />
               {events.map((event) => {

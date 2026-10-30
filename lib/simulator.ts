@@ -53,6 +53,7 @@ export function createSimulatorReading(
   const previous = history.slice(-12).map((reading) => ({
     ts: reading.ts,
     gas_raw: reading.gas_raw,
+    baseline_raw: reading.baseline_raw,
     wind_from_deg: reading.wind_from_deg,
     surge: reading.surge,
   }));

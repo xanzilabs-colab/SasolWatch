@@ -13,13 +13,13 @@ export function EventBanner({ fusion, event, now }: { fusion: Fusion | null; eve
       <div className="event-banner-icon"><AlertTriangle size={24} /></div>
       <div className="event-main">
         <div className="event-title-row">
-          <span className="event-severity">{severity} AIR EVENT</span>
+          <span className="event-severity">{severity} SENSOR EVENT</span>
           {event?.test_mode && <span className="test-pill">TEST</span>}
           <span className="event-duration">ACTIVE {durationLabel}</span>
         </div>
-        <h1>Possible {fusion.source_label}<span> · {Math.round(fusion.confidence * 100)}% confidence</span></h1>
+        <h1>Source hypothesis: {fusion.source_label}<span> · {Math.round(fusion.confidence * 100)}% rule score</span></h1>
         <p>{fusion.guidance}</p>
-        <small>Early-warning estimate. Not a confirmed cause.</small>
+        <small>Surge score {fusion.surge_score ?? "—"}/100. Early-warning estimate, not a measured pollutant or confirmed cause.</small>
       </div>
       <div className="event-wind">
         <Wind size={19} />

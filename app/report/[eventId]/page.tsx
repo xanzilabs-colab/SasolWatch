@@ -55,12 +55,13 @@ export default async function EventReport({ params }: ReportProps) {
         <section className="report-section">
           <h2>Summary and estimate</h2>
           <div className="report-summary-grid">
-            <p><small>Estimated source</small><strong>{summary?.source_label ?? event.source_type?.replaceAll("_", " ") ?? "Unavailable"}</strong></p>
-            <p><small>Confidence</small><strong>{Math.round((summary?.confidence ?? event.confidence ?? 0) * 100)}%</strong></p>
+            <p><small>Source hypothesis</small><strong>{summary?.source_label ?? event.source_type?.replaceAll("_", " ") ?? "Unavailable"}</strong></p>
+            <p><small>Source rule score</small><strong>{Math.round((summary?.confidence ?? event.confidence ?? 0) * 100)}%</strong></p>
+            <p><small>Surge score</small><strong>{summary?.surge_score == null ? "Unavailable for this older event" : `${summary.surge_score}/100`}</strong></p>
             <p><small>Wind from device potentiometer</small><strong>{event.wind_from_deg == null ? "—" : `${compassDirection(event.wind_from_deg)} (${event.wind_from_deg.toFixed(1)}°)`}</strong></p>
           </div>
           <p>{summary?.guidance ?? "No guidance summary was stored for this event."}</p>
-          <p className="report-caveat">This is an early-warning estimate, not a confirmed cause.</p>
+          <p className="report-caveat">Source is a rule-based hypothesis, not a measured pollutant or confirmed cause. MQ readings are raw sensor response, not calibrated gas concentration.</p>
         </section>
         <section className="report-section">
           <h2>Sensor response</h2>
