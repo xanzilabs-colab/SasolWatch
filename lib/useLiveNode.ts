@@ -164,14 +164,19 @@ export function useLiveNode(enabled = true): LiveNodeState {
       setEvents((current) => [incoming, ...current.filter((event) => event.id !== incoming.id)]
         .sort((a, b) => Date.parse(b.started_at) - Date.parse(a.started_at)).slice(0, 10));
     };
+    const upsertReading = (incoming: ReadingRow) => {
+      if (Date.parse(incoming.ts) > Date.parse(readingCursor.current || "1970-01-01")) readingCursor.current = incoming.ts;
+      setReadings((current) => [...current.filter((row) => row.id !== incoming.id), incoming]
+        .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts)).slice(-300));
+    };
 
     const channel = supabase
       .channel(`dashboard-${NODE_ID}`)
       .on("postgres_changes", { event: "INSERT", schema: "public", table: "readings", filter: `node_id=eq.${NODE_ID}` }, (payload) => {
-        const incoming = payload.new as ReadingRow;
-        if (Date.parse(incoming.ts) > Date.parse(readingCursor.current || "1970-01-01")) readingCursor.current = incoming.ts;
-        setReadings((current) => [...current.filter((row) => row.id !== incoming.id), incoming]
-          .sort((a, b) => Date.parse(a.ts) - Date.parse(b.ts)).slice(-300));
+        upsertReading(payload.new as ReadingRow);
+      })
+      .on("postgres_changes", { event: "UPDATE", schema: "public", table: "readings", filter: `node_id=eq.${NODE_ID}` }, (payload) => {
+        upsertReading(payload.new as ReadingRow);
       })
       .on("postgres_changes", { event: "*", schema: "public", table: "events", filter: `node_id=eq.${NODE_ID}` }, (payload) => {
         if (payload.eventType === "DELETE") {

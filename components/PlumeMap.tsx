@@ -11,7 +11,6 @@ import {
   TileLayer,
   Tooltip,
   ZoomControl,
-  useMap,
 } from "react-leaflet";
 import { ArrowUpRight, MapPin } from "lucide-react";
 import { buildCone, compassDirection, destinationPoint } from "@/lib/geo";
@@ -24,31 +23,17 @@ const severityColor: Record<string, string> = {
 const kindIcon: Record<string, string> = {
   industrial: "⌂", power: "ϟ", mine: "◆", waste_treatment: "≋", residential: "⌂", road: "⇢",
 };
+const profileLabels: Record<string, { name: string; pollutants: string }> = {
+  industrial_plume: { name: "Industrial/process", pollutants: "SO₂ · NO₂ · VOC · H₂S" },
+  household_burning: { name: "Household combustion", pollutants: "PM · CO · VOC" },
+  traffic: { name: "Traffic combustion", pollutants: "NO₂ · CO · VOC · PM" },
+  open_burning: { name: "Open burning", pollutants: "PM · CO · VOC" },
+};
 
 function escapeHtml(text: string) {
   return text.replace(/[&<>"']/g, (character) => ({
     "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
   })[character] ?? character);
-}
-
-function FitMap({ node, fusion, active, windFromDeg }: { node: NodeRow; fusion: Fusion | null; active: boolean; windFromDeg: number | null }) {
-  const map = useMap();
-  const from = windFromDeg;
-  const halfWidth = fusion?.wind.sector_halfwidth_deg;
-  useEffect(() => {
-    const lat = node.lat;
-    const lon = node.lon;
-    if (active && from != null && halfWidth != null) {
-      const bounds = L.latLngBounds([
-        [lat, lon],
-        ...buildCone(lat, lon, from, halfWidth, 8),
-      ]);
-      map.fitBounds(bounds, { padding: [36, 36], maxZoom: 13, animate: true });
-    } else {
-      map.setView([lat, lon], 13, { animate: true });
-    }
-  }, [active, from, halfWidth, map, node.lat, node.lon]);
-  return null;
 }
 
 export default function PlumeMap({
@@ -58,6 +43,7 @@ export default function PlumeMap({
   simulator,
   windFromDeg,
   windRaw,
+  readingTime,
 }: {
   node: NodeRow | null;
   sources: SourceRow[];
@@ -65,6 +51,7 @@ export default function PlumeMap({
   simulator: boolean;
   windFromDeg: number | null;
   windRaw: number | null;
+  readingTime?: string | null;
 }) {
   const [mapReady, setMapReady] = useState(false);
   const [motionEnabled, setMotionEnabled] = useState(false);
@@ -73,6 +60,34 @@ export default function PlumeMap({
   const color = severityColor[fusion?.severity ?? "none"];
   const from = windFromDeg;
   const to = from == null ? null : (from + 180) % 360;
+  const sectorHalfWidth = Math.max(10, Math.min(35, fusion?.wind.sector_halfwidth_deg ?? 15));
+  const flowSector = node && to != null
+    ? buildCone(node.lat, node.lon, to, sectorHalfWidth, 7)
+    : [];
+  const hypotheses = surge && fusion
+    ? Object.entries(fusion.scores)
+      .sort((a, b) => b[1] - a[1])
+      .map(([type, score]) => ({ ...profileLabels[type], score }))
+      .filter((hypothesis) => hypothesis.name)
+    : [];
+  const analysisTag = hypotheses.length
+    ? L.divIcon({
+      className: "",
+      html: `<div class="plume-analysis-tag"><strong>MODELLED SOURCE HYPOTHESES</strong><ul>${hypotheses.map((item) =>
+        `<li><b>${escapeHtml(item.name)}</b><span>${Math.round(item.score * 100)}% rule score</span><small>Possible profile: ${escapeHtml(item.pollutants)}</small></li>`
+      ).join("")}</ul><small>Not pollutant measurements. MQ sensor reports raw response only.</small></div>`,
+      iconSize: [245, 170],
+      iconAnchor: [0, 0],
+    })
+    : null;
+  const readingTimeLabel = readingTime && Number.isFinite(Date.parse(readingTime))
+    ? new Intl.DateTimeFormat("en-ZA", {
+      timeZone: "Africa/Johannesburg",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    }).format(new Date(readingTime))
+    : null;
 
   useEffect(() => {
     const timer = window.setTimeout(() => setMapReady(true), 0);
@@ -96,9 +111,6 @@ export default function PlumeMap({
     return () => window.clearInterval(timer);
   }, [motionEnabled, simulator, surge]);
 
-  const cone = node && fusion?.wind && from != null
-    ? buildCone(node.lat, node.lon, from, fusion.wind.sector_halfwidth_deg, 8)
-    : [];
   const particleCount = simulator && surge ? Math.min(20, 4 + Math.round((fusion?.intensity ?? 0) * 28)) : 0;
   const particles = node ? Array.from({ length: particleCount }, (_, index) => {
     const progress = ((index / Math.max(1, particleCount)) + (particleTick * 0.035 * Math.max(0.5, fusion?.wind.speed_ms ?? 1))) % 1;
@@ -124,18 +136,20 @@ export default function PlumeMap({
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
-          <FitMap node={node} fusion={fusion} active={surge} windFromDeg={from} />
           <Marker position={[node.lat, node.lon]} icon={nodeIcon}>
             <Tooltip direction="top" offset={[0, -6]}>{node.name}</Tooltip>
           </Marker>
-          {surge && cone.length > 0 && (
-            <>
-              <Polygon positions={cone} pathOptions={{ color, weight: 2, dashArray: "7 7", fillColor: color, fillOpacity: 0.12 }} />
-              {to != null && <Polyline positions={[[node.lat, node.lon], destinationPoint(node.lat, node.lon, to, 8)]} pathOptions={{ color: "#22d3ee", weight: 2, dashArray: "5 8", opacity: 0.8 }} />}
-            </>
+          {flowSector.length > 0 && (
+            <Polygon
+              positions={flowSector}
+              pathOptions={{ color, weight: surge ? 2 : 1, dashArray: "7 7", fillColor: color, fillOpacity: surge ? 0.18 : 0.08 }}
+            />
           )}
-          {!surge && from != null && to != null && (
-            <Polyline positions={[[node.lat, node.lon], destinationPoint(node.lat, node.lon, to, 3)]} pathOptions={{ color: "#22d3ee", weight: 2, dashArray: "5 8", opacity: 0.55 }} />
+          {to != null && (
+            <Polyline
+              positions={[[node.lat, node.lon], destinationPoint(node.lat, node.lon, to, 7)]}
+              pathOptions={{ color: "#22d3ee", weight: 2, dashArray: "5 8", opacity: surge ? 0.9 : 0.65 }}
+            />
           )}
           {sources.map((source) => {
             const candidate = surge ? fusion?.candidates.find((item) => String(item.id) === String(source.id)) : undefined;
@@ -165,6 +179,9 @@ export default function PlumeMap({
           {surge && from != null && (
             <Marker position={destinationPoint(node.lat, node.lon, from, 7.7)} icon={L.divIcon({ className: "map-tip", html: `<span>UPWIND · ${escapeHtml(compassDirection(from))} ${from.toFixed(1)}°</span>`, iconAnchor: [0, 0] })} />
           )}
+          {surge && to != null && analysisTag && (
+            <Marker position={destinationPoint(node.lat, node.lon, to, 3.3)} icon={analysisTag} interactive={false} />
+          )}
           {from != null && to != null && (
             <Marker
               position={destinationPoint(node.lat, node.lon, to, surge ? 7.7 : 3)}
@@ -180,8 +197,8 @@ export default function PlumeMap({
         </MapContainer> : <div className="leaflet-map" />}
         <div className="map-compass" aria-hidden="true"><ArrowUpRight size={20} /><span>N</span></div>
         <div className="map-footer">
-          <span><MapPin size={13} /> {from == null ? "Waiting for device wind-potentiometer reading" : `${simulator ? "SIMULATOR" : "DEVICE VANE"} · FROM ${compassDirection(from)} ${from.toFixed(1)}° · ADC ${windRaw ?? "—"} / 4095`}</span>
-          <span>{surge && fusion?.wind ? `UPWIND SECTOR ±${fusion.wind.sector_halfwidth_deg}° · ` : ""}{to == null ? "Wind-flow direction unavailable" : `FLOW → ${compassDirection(to)} ${to.toFixed(1)}°`}{surge && fusion?.wind ? ` · ${fusion.wind.speed_ms == null ? "wind speed unavailable" : `${fusion.wind.speed_ms.toFixed(1)} m/s`}` : ""}</span>
+          <span><MapPin size={13} /> {from == null ? "Waiting for device wind-potentiometer reading" : `${simulator ? "SIMULATOR" : "DEVICE VANE"} · FROM ${compassDirection(from)} ${from.toFixed(1)}° · ADC ${windRaw ?? "—"} / 4095${readingTimeLabel ? ` · SAMPLE ${readingTimeLabel} SAST` : ""}`}</span>
+          <span>{surge && fusion?.wind ? `UPWIND SECTOR ±${fusion.wind.sector_halfwidth_deg}° · ` : ""}{to == null ? "Wind-flow direction unavailable" : `FLOW → ${compassDirection(to)} ${to.toFixed(1)}° · DEVICE-VANE DIRECTION CORRIDOR (NOT A DISPERSION MODEL)`}{surge && fusion?.wind ? ` · ${fusion.wind.speed_ms == null ? "weather speed unavailable" : `${fusion.wind.speed_ms.toFixed(1)} m/s weather speed`}` : ""}</span>
         </div>
         {!node && <div className="map-data-notice">No registered node coordinates are available. Add the sensor&apos;s real location in Supabase; placeholder coordinates are not shown.</div>}
         {node && sources.length === 0 && (
@@ -194,7 +211,7 @@ export default function PlumeMap({
       <div className="map-legend">
         <span><i className="legend-node" /> Node</span>
         <span><i className="legend-wind" /> Vane flow</span>
-        {surge && <span><i className="legend-cone" /> Upwind sector</span>}
+        <span><i className="legend-cone" /> Device-vane direction corridor</span>
         {sources.length > 0 && <span><i className="legend-source" /> {simulator ? "Scenario source" : "Verified source"}</span>}
         <small>{simulator ? "Scenario locations are illustrative." : "Only verified source coordinates are shown."}</small>
       </div>

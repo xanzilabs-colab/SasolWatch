@@ -68,42 +68,83 @@ function windSteadiness(degs: number[]) {
 }
 
 // ---------- local weather (OpenWeather, cached) ----------
-async function getWeather(node: any) {
-  try {
-    const { data: row } = await sb.from("weather_cache").select("*").eq("node_id", node.id).maybeSingle();
-    if (row && Date.now() - new Date(row.fetched_at).getTime() < WEATHER_TTL_MIN * 60_000) return row.data;
+const weatherCache = new Map<string, { data: Record<string, unknown>; fetchedAt: number }>();
+const weatherRefreshes = new Map<string, Promise<void>>();
+const weatherRefreshStartedAt = new Map<string, number>();
 
-    if (!OPENWEATHER_API_KEY) throw new Error("OpenWeather API key is not configured");
-    const url = new URL("https://api.openweathermap.org/data/2.5/weather");
-    url.searchParams.set("lat", String(node.lat));
-    url.searchParams.set("lon", String(node.lon));
-    url.searchParams.set("units", "metric");
-    url.searchParams.set("appid", OPENWEATHER_API_KEY);
-    const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
-    if (!res.ok) throw new Error("openweather " + res.status);
-    const j = await res.json();
-    if (!j.main || !j.wind) throw new Error("openweather response missing current conditions");
-    const precipitation = j.rain?.["1h"] ?? j.rain?.["3h"] ?? 0;
-    const data = {
-      source: "openweather",
-      observed_at: j.dt ? new Date(j.dt * 1000).toISOString() : null,
-      temperature_c: j.main.temp,
-      humidity_pct: j.main.humidity,
-      precipitation_mm: precipitation,
-      pressure_hpa: j.main.pressure,
-      cloud_cover_pct: j.clouds?.all ?? null,
-      wind_speed_ms: j.wind.speed,
-      wind_gust_ms: j.wind.gust ?? null,
-      wind_dir_deg: j.wind.deg ?? null,
-      fetched_at: new Date().toISOString(),
-    };
-    await sb.from("weather_cache").upsert({ node_id: node.id, fetched_at: data.fetched_at, data });
-    return data;
-  } catch (e) {
-    console.error("weather fetch failed", e instanceof Error ? e.name : "Unknown error");
-    const { data: row } = await sb.from("weather_cache").select("data").eq("node_id", node.id).maybeSingle();
-    return row?.data ? { ...row.data, stale: true } : null; // fall back to the last good value, or none
+async function refreshWeather(node: any) {
+  if (!OPENWEATHER_API_KEY) throw new Error("OpenWeather API key is not configured");
+  const url = new URL("https://api.openweathermap.org/data/2.5/weather");
+  url.searchParams.set("lat", String(node.lat));
+  url.searchParams.set("lon", String(node.lon));
+  url.searchParams.set("units", "metric");
+  url.searchParams.set("appid", OPENWEATHER_API_KEY);
+  const response = await fetch(url, { signal: AbortSignal.timeout(4000) });
+  if (!response.ok) throw new Error(`OpenWeather returned HTTP ${response.status}`);
+  const result = await response.json();
+  if (!result.main || !result.wind) throw new Error("OpenWeather response is missing current conditions");
+  const fetchedAt = new Date().toISOString();
+  const data = {
+    source: "openweather",
+    observed_at: result.dt ? new Date(result.dt * 1000).toISOString() : null,
+    temperature_c: result.main.temp,
+    humidity_pct: result.main.humidity,
+    precipitation_mm: result.rain?.["1h"] ?? result.rain?.["3h"] ?? 0,
+    pressure_hpa: result.main.pressure,
+    cloud_cover_pct: result.clouds?.all ?? null,
+    wind_speed_ms: result.wind.speed,
+    wind_gust_ms: result.wind.gust ?? null,
+    wind_dir_deg: result.wind.deg ?? null,
+    fetched_at: fetchedAt,
+  };
+  const { error } = await sb.from("weather_cache").upsert({
+    node_id: node.id,
+    fetched_at: fetchedAt,
+    data,
+  });
+  if (error) throw new Error("Could not save refreshed weather cache");
+  weatherCache.set(node.id, { data, fetchedAt: Date.parse(fetchedAt) });
+}
+
+function scheduleWeatherRefresh(node: any) {
+  if (weatherRefreshes.has(node.id)) return;
+  const now = Date.now();
+  if (now - (weatherRefreshStartedAt.get(node.id) ?? 0) < 60_000) return;
+  weatherRefreshStartedAt.set(node.id, now);
+  const refresh = refreshWeather(node)
+    .catch((error) => console.error(
+      "OpenWeather refresh failed",
+      error instanceof Error ? error.message : "Unknown error",
+    ))
+    .finally(() => weatherRefreshes.delete(node.id));
+  weatherRefreshes.set(node.id, refresh);
+  EdgeRuntime.waitUntil(refresh);
+}
+
+async function getWeather(node: any) {
+  const cached = weatherCache.get(node.id);
+  if (cached && Date.now() - cached.fetchedAt < WEATHER_TTL_MIN * 60_000) return cached.data;
+
+  const { data: row, error } = await sb.from("weather_cache")
+    .select("data,fetched_at").eq("node_id", node.id).maybeSingle();
+  if (error) {
+    console.error("Weather cache lookup failed", error.message);
+    scheduleWeatherRefresh(node);
+    return cached ? { ...cached.data, stale: true } : null;
   }
+
+  if (row?.data && row.fetched_at) {
+    const fetchedAt = Date.parse(row.fetched_at);
+    if (Number.isFinite(fetchedAt)) {
+      weatherCache.set(node.id, { data: row.data, fetchedAt });
+      if (Date.now() - fetchedAt < WEATHER_TTL_MIN * 60_000) return row.data;
+      scheduleWeatherRefresh(node);
+      return { ...row.data, stale: true };
+    }
+  }
+
+  scheduleWeatherRefresh(node);
+  return cached ? { ...cached.data, stale: true } : null;
 }
 
 // ---------- rule-based analysis of measured device readings ----------
@@ -373,21 +414,42 @@ Deno.serve(async (req) => {
   }
   if (!node) return json({ error: "node lookup failed" }, 500);
 
-  const { data: histDesc } = await sb.from("readings")
-    .select("ts,gas_raw,baseline_raw,wind_from_deg,surge,test_mode").eq("node_id", nodeId).order("ts", { ascending: false }).limit(30);
-  const prev = (histDesc ?? []).filter((reading) => !reading.test_mode).slice(0, 12).reverse();
-  const { data: sources, error: sourcesError } = await sb.from("sources").select("*").eq("illustrative", false);
-  if (sourcesError) return json({ error: "source lookup failed" }, 500);
-
   const warming = !!b.warming_up;
   const testMode = !!b.test_mode;
-  const weather = await getWeather(node);
+  const [historyResult, sourcesResult, weather] = await Promise.all([
+    sb.from("readings")
+      .select("ts,gas_raw,baseline_raw,wind_from_deg,surge,test_mode")
+      .eq("node_id", nodeId).order("ts", { ascending: false }).limit(30),
+    sb.from("sources").select("*").eq("illustrative", false),
+    getWeather(node),
+  ]);
+  if (historyResult.error) console.error("Could not load sensor history for surge scoring", historyResult.error.message);
+  if (sourcesResult.error) console.error("Could not load verified source locations", sourcesResult.error.message);
+  const prev = (historyResult.data ?? []).filter((reading) => !reading.test_mode).slice(0, 12).reverse();
   const windFrom = norm360(rawWindFrom);
   const fusion = fuse({
     gas, baseline, warming, temp: temperature, rh: humidity,
-    windFrom, ts, prev, node, sources: (sources ?? []).filter((source: any) => !source.illustrative), weather,
+    windFrom, ts, prev, node,
+    sources: (sourcesResult.data ?? []).filter((source: any) => !source.illustrative),
+    weather,
     deviceSurge: !!b.device_surge,
   });
+
+  const readingInsert = await sb.from("readings").insert({
+    node_id: nodeId, ts: ts.toISOString(), gas_raw: gas, baseline_raw: baseline,
+    wind_raw: windRaw, wind_from_deg: windFrom,
+    temperature_c: temperature, humidity_pct: humidity,
+    device_surge: !!b.device_surge, warming_up: warming, test_mode: testMode,
+    surge: fusion.surge, event_id: null, fusion, rssi: b.rssi ?? null, fw: b.fw ?? null,
+  }).select("id").single();
+  if (readingInsert.error) {
+    console.error("reading insert failed", readingInsert.error.message);
+    return json({ error: "Could not store sensor reading" }, 500);
+  }
+  EdgeRuntime.waitUntil((async () => {
+    const { error } = await sb.from("nodes").update({ last_seen: now.toISOString() }).eq("id", nodeId);
+    if (error) console.error("Could not update node last-seen time", error.message);
+  })());
 
   // The fusion score already requires three consecutive elevated readings.
   const prevSurge = !!prev[prev.length - 1]?.surge;
@@ -422,25 +484,24 @@ Deno.serve(async (req) => {
     ev = null;
   }
 
-  // store the reading
-  const ins = await sb.from("readings").insert({
-    node_id: nodeId, ts: ts.toISOString(), gas_raw: gas, baseline_raw: baseline,
-    wind_raw: windRaw, wind_from_deg: windFrom,
-    temperature_c: temperature, humidity_pct: humidity,
-    device_surge: !!b.device_surge, warming_up: warming, test_mode: testMode,
-    surge: fusion.surge, event_id: ev?.id ?? null, fusion, rssi: b.rssi ?? null, fw: b.fw ?? null,
-  });
-  if (ins.error) console.error("reading insert", ins.error);
-  await sb.from("nodes").update({ last_seen: now.toISOString() }).eq("id", nodeId);
+  if (ev?.id) {
+    const { error } = await sb.from("readings").update({ event_id: ev.id }).eq("id", readingInsert.data.id);
+    if (error) console.error("Could not link reading to its event", error.message);
+  }
 
-  // alerts
-  let alertRows: any[] = [];
-  if (ev && fusion.surge) alertRows = await dispatchAlerts(ev, fusion, node, testMode || !!ev.test_mode);
+  const alertProcessing = Boolean(ev && fusion.surge);
+  if (ev && fusion.surge) {
+    EdgeRuntime.waitUntil(dispatchAlerts(ev, fusion, node, testMode || !!ev.test_mode)
+      .catch((error) => console.error(
+        "WhatsApp alert processing failed",
+        error instanceof Error ? error.message : "Unknown error",
+      )));
+  }
 
   return json({
     ok: true, surge: fusion.surge, severity: fusion.severity, event_id: ev?.id ?? null,
     surge_score: fusion.surge_score, surge_streak: fusion.surge_streak,
     wind_raw: windRaw, wind_from_deg: windFrom, compass_from: compass(windFrom),
-    source_type: fusion.source_type, alerts: alertRows.length,
+    source_type: fusion.source_type, alert_processing: alertProcessing,
   });
 });

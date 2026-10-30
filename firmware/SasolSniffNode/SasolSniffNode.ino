@@ -2,12 +2,14 @@
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include "DHTesp.h"
 #include "secrets.h"
 
 const char* INGEST_URL = "https://bfcckzvvxqzvctvfrscd.supabase.co/functions/v1/ingest";
 const char* NODE_ID = "sasolsniff-node-01";
-const char* FW_VERSION = "sasolsniff-fw-1.2";
+const char* FW_VERSION = "sasolsniff-fw-1.3";
 
 constexpr int MQ_PIN = 34;
 constexpr int WIND_PIN = 32;
@@ -15,7 +17,7 @@ constexpr int DHT_PIN = 15;
 constexpr int BUTTON_PIN = 13;
 constexpr int LED_PIN = 2;
 
-constexpr unsigned long SEND_INTERVAL_MS = 1000;
+constexpr unsigned long SAMPLE_INTERVAL_MS = 1000;
 constexpr unsigned long WARMUP_MS = 180000;
 constexpr unsigned long DEBOUNCE_MS = 40;
 constexpr unsigned long WIFI_RETRY_MS = 10000;
@@ -30,11 +32,26 @@ constexpr float SURGE_MIN_RISE = 150.0f;
 constexpr float SURGE_REL_RISE = 0.25f;
 
 DHTesp dht;
+struct SensorReading {
+  int gasRaw;
+  int windRaw;
+  float windDeg;
+  float baseline;
+  float temperature;
+  float humidity;
+  int rssi;
+  bool hasTemperature;
+  bool hasHumidity;
+  bool deviceSurge;
+  bool warming;
+};
+
+QueueHandle_t uploadQueue = nullptr;
 float baseline = -1;
 bool warming = true;
 bool deviceSurge = false;
 unsigned long bootMs = 0;
-unsigned long lastSend = 0;
+unsigned long lastSample = 0;
 unsigned long lastWifiTry = 0;
 
 int lastButtonReading = HIGH;
@@ -101,19 +118,10 @@ void rebaseline() {
   startFlashes(3);
 }
 
-void wifiConnect(bool blocking) {
+void wifiConnect() {
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   lastWifiTry = millis();
-  if (!blocking) return;
-
-  Serial.print("Wi-Fi connecting");
-  const unsigned long started = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - started < 15000) {
-    delay(300);
-    Serial.print(".");
-  }
-  Serial.println(WiFi.status() == WL_CONNECTED ? " connected" : " not connected; retrying");
 }
 
 void checkButton() {
@@ -163,7 +171,58 @@ void updateLed() {
   }
 }
 
-void sendReading() {
+void sendReading(const SensorReading& sample) {
+  char temperatureJson[16];
+  char humidityJson[16];
+  if (sample.hasTemperature) snprintf(temperatureJson, sizeof(temperatureJson), "%.1f", sample.temperature);
+  else strcpy(temperatureJson, "null");
+  if (sample.hasHumidity) snprintf(humidityJson, sizeof(humidityJson), "%.1f", sample.humidity);
+  else strcpy(humidityJson, "null");
+
+  char body[384];
+  snprintf(body, sizeof(body),
+    "{\"node_id\":\"%s\",\"gas_raw\":%d,\"baseline_raw\":%.1f,"
+    "\"wind_raw\":%d,\"wind_from_deg\":%.1f,"
+    "\"temperature_c\":%s,\"humidity_pct\":%s,"
+    "\"device_surge\":%s,\"warming_up\":%s,\"test_mode\":false,"
+    "\"rssi\":%d,\"fw\":\"%s\"}",
+    NODE_ID, sample.gasRaw, sample.baseline, sample.windRaw, sample.windDeg,
+    temperatureJson, humidityJson, sample.deviceSurge ? "true" : "false",
+    sample.warming ? "true" : "false", sample.rssi, FW_VERSION);
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setTimeout(5000);
+  if (!http.begin(client, INGEST_URL)) {
+    Serial.println("[UPLOAD] HTTP begin failed");
+    return;
+  }
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("x-device-key", DEVICE_KEY);
+  const int code = http.POST(reinterpret_cast<uint8_t*>(body), strlen(body));
+  if (code > 0) {
+    Serial.printf("[UPLOAD] POST -> %d %s\n", code, http.getString().c_str());
+  } else {
+    Serial.printf("[UPLOAD] POST failed: %s\n", http.errorToString(code).c_str());
+  }
+  http.end();
+}
+
+void uploadTask(void* parameter) {
+  SensorReading sample;
+  while (true) {
+    if (WiFi.status() != WL_CONNECTED) {
+      vTaskDelay(pdMS_TO_TICKS(250));
+      continue;
+    }
+    if (xQueueReceive(uploadQueue, &sample, pdMS_TO_TICKS(250)) == pdTRUE) {
+      sendReading(sample);
+    }
+  }
+}
+
+void sampleSensors() {
   const int gasRaw = readAnalog(MQ_PIN);
   const int windRaw = readAnalog(WIND_PIN);
   const float windDeg = windFromDeg(windRaw);
@@ -185,52 +244,24 @@ void sendReading() {
     baseline = baseline * 0.99f + gasRaw * 0.01f;
   }
 
-  char temperatureJson[16];
-  char humidityJson[16];
   char temperatureText[16] = "unavailable";
   char humidityText[16] = "unavailable";
-  if (hasTemperature) snprintf(temperatureJson, sizeof(temperatureJson), "%.1f", reading.temperature);
-  else strcpy(temperatureJson, "null");
-  if (hasHumidity) snprintf(humidityJson, sizeof(humidityJson), "%.1f", reading.humidity);
-  else strcpy(humidityJson, "null");
   if (hasTemperature) snprintf(temperatureText, sizeof(temperatureText), "%.1f", reading.temperature);
   if (hasHumidity) snprintf(humidityText, sizeof(humidityText), "%.1f", reading.humidity);
-
-  char body[384];
-  snprintf(body, sizeof(body),
-    "{\"node_id\":\"%s\",\"gas_raw\":%d,\"baseline_raw\":%.1f,"
-    "\"wind_raw\":%d,\"wind_from_deg\":%.1f,"
-    "\"temperature_c\":%s,\"humidity_pct\":%s,"
-    "\"device_surge\":%s,\"warming_up\":%s,\"test_mode\":false,"
-    "\"rssi\":%d,\"fw\":\"%s\"}",
-    NODE_ID, gasRaw, baseline, windRaw, windDeg, temperatureJson, humidityJson,
-    deviceSurge ? "true" : "false", warming ? "true" : "false",
-    WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0, FW_VERSION);
 
   Serial.printf("gas_raw=%d baseline=%.1f wind_raw=%d wind_from=%s %.1f° T=%s H=%s %s%s\n",
     gasRaw, baseline, windRaw, compassDirection(windDeg), windDeg,
     temperatureText, humidityText,
     warming ? "[WARMUP] " : "", deviceSurge ? "[SURGE]" : "");
 
-  if (WiFi.status() != WL_CONNECTED) return;
-
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  http.setTimeout(10000);
-  if (!http.begin(client, INGEST_URL)) {
-    Serial.println("HTTP begin failed");
-    return;
+  if (uploadQueue != nullptr) {
+    const SensorReading sample = {
+      gasRaw, windRaw, windDeg, baseline, reading.temperature, reading.humidity,
+      WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0,
+      hasTemperature, hasHumidity, deviceSurge, warming,
+    };
+    xQueueOverwrite(uploadQueue, &sample);
   }
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("x-device-key", DEVICE_KEY);
-  const int code = http.POST(reinterpret_cast<uint8_t*>(body), strlen(body));
-  if (code > 0) {
-    Serial.printf("POST -> %d %s\n", code, http.getString().c_str());
-  } else {
-    Serial.printf("POST failed: %s\n", http.errorToString(code).c_str());
-  }
-  http.end();
 }
 
 void setup() {
@@ -245,11 +276,19 @@ void setup() {
   dht.setup(DHT_PIN, DHTesp::DHT11);
 
   Serial.println("\n=== SASOLSNIFF NODE ===");
-  Serial.printf("Reporting every %lu ms. Short button press = rebaseline.\n", SEND_INTERVAL_MS);
+  Serial.printf("Sampling every %lu ms; Wi-Fi uploads run independently. Short button press = rebaseline.\n", SAMPLE_INTERVAL_MS);
   Serial.println("Wind direction is read from the potentiometer on GPIO 32.");
 
   bootMs = millis();
-  wifiConnect(true);
+  wifiConnect();
+  uploadQueue = xQueueCreate(1, sizeof(SensorReading));
+  if (uploadQueue == nullptr) {
+    Serial.println("ERROR: Could not create the sensor upload queue; readings will remain serial-only.");
+  } else if (xTaskCreate(uploadTask, "sensor-upload", 12288, nullptr, 1, nullptr) != pdPASS) {
+    vQueueDelete(uploadQueue);
+    uploadQueue = nullptr;
+    Serial.println("ERROR: Could not start the Wi-Fi upload task; readings will remain serial-only.");
+  }
 }
 
 void loop() {
@@ -259,12 +298,12 @@ void loop() {
   if (WiFi.status() != WL_CONNECTED && millis() - lastWifiTry > WIFI_RETRY_MS) {
     Serial.println("Wi-Fi retry");
     WiFi.disconnect();
-    wifiConnect(false);
+    wifiConnect();
   }
 
-  if (millis() - lastSend >= SEND_INTERVAL_MS) {
-    lastSend = millis();
-    sendReading();
+  if (millis() - lastSample >= SAMPLE_INTERVAL_MS) {
+    lastSample = millis();
+    sampleSensors();
   }
   delay(5);
 }

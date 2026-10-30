@@ -481,7 +481,7 @@ export function Dashboard({
       </section>
 
       <div className="content-grid overview-map-grid">
-        <section className="span-8"><PlumeMap node={mapNode} sources={analysisSources} fusion={fusion} simulator={simulatorMode} windFromDeg={windFromDeg} windRaw={simulatorMode ? null : latest?.wind_raw ?? null} /></section>
+        <section className="span-8"><PlumeMap node={mapNode} sources={analysisSources} fusion={fusion} simulator={simulatorMode} windFromDeg={windFromDeg} windRaw={simulatorMode ? null : latest?.wind_raw ?? null} readingTime={latest?.received_at ?? null} /></section>
         <div className="content-stack span-4">
           <ClassifierPanel fusion={fusion} active={active} simulated={simulatorMode} reading={latest} />
           <CandidateList fusion={fusion} active={active} simulated={simulatorMode} sourceCount={analysisSources.length} />
@@ -517,7 +517,7 @@ export function Dashboard({
       case "map":
         return (
           <div className="content-grid map-view-grid">
-            <section className="span-8"><PlumeMap node={mapNode} sources={analysisSources} fusion={fusion} simulator={simulatorMode} windFromDeg={windFromDeg} windRaw={simulatorMode ? null : latest?.wind_raw ?? null} /></section>
+            <section className="span-8"><PlumeMap node={mapNode} sources={analysisSources} fusion={fusion} simulator={simulatorMode} windFromDeg={windFromDeg} windRaw={simulatorMode ? null : latest?.wind_raw ?? null} readingTime={latest?.received_at ?? null} /></section>
             <div className="content-stack span-4">
               <ClassifierPanel fusion={fusion} active={active} simulated={simulatorMode} reading={latest} />
               <CandidateList fusion={fusion} active={active} simulated={simulatorMode} sourceCount={analysisSources.length} />
