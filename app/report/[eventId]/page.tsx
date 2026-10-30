@@ -4,6 +4,7 @@ import { ArrowLeft } from "lucide-react";
 import { ReportChart } from "@/components/ReportChart";
 import { PrintButton } from "@/components/PrintButton";
 import type { AlertRow, EventRow, Fusion, NodeRow, ReadingRow } from "@/lib/types";
+import { compassDirection } from "@/lib/geo";
 
 export const dynamic = "force-dynamic";
 
@@ -56,7 +57,7 @@ export default async function EventReport({ params }: ReportProps) {
           <div className="report-summary-grid">
             <p><small>Estimated source</small><strong>{summary?.source_label ?? event.source_type?.replaceAll("_", " ") ?? "Unavailable"}</strong></p>
             <p><small>Confidence</small><strong>{Math.round((summary?.confidence ?? event.confidence ?? 0) * 100)}%</strong></p>
-            <p><small>Wind from</small><strong>{summary?.wind.compass_from ?? "—"} {event.wind_from_deg == null ? "" : `(${Math.round(event.wind_from_deg)}°)`}</strong></p>
+            <p><small>Wind from device potentiometer</small><strong>{event.wind_from_deg == null ? "—" : `${compassDirection(event.wind_from_deg)} (${event.wind_from_deg.toFixed(1)}°)`}</strong></p>
           </div>
           <p>{summary?.guidance ?? "No guidance summary was stored for this event."}</p>
           <p className="report-caveat">This is an early-warning estimate, not a confirmed cause.</p>
@@ -70,7 +71,7 @@ export default async function EventReport({ params }: ReportProps) {
           <section className="report-section">
             <h2>Wind and weather at peak</h2>
             <dl className="report-definition-list">
-              <dt>Wind direction</dt><dd>{summary?.wind.compass_from ?? "—"} from / {summary?.wind.compass_to ?? "—"} toward</dd>
+              <dt>Wind direction</dt><dd>{event.wind_from_deg == null ? "—" : `${compassDirection(event.wind_from_deg)} ${event.wind_from_deg.toFixed(1)}° from / ${compassDirection(event.wind_from_deg + 180)} toward (device potentiometer)`}</dd>
               <dt>Wind speed</dt><dd>{summary?.wind.speed_ms?.toFixed(1) ?? "—"} m/s{summary?.wind.speed_assumed ? " (assumed)" : ""}</dd>
               <dt>Temperature</dt><dd>{summary?.weather?.temperature_c ?? "—"} °C</dd>
               <dt>Humidity</dt><dd>{summary?.weather?.humidity_pct ?? "—"}%</dd>
@@ -78,16 +79,14 @@ export default async function EventReport({ params }: ReportProps) {
             </dl>
           </section>
           <section className="report-section">
-            <h2>Simulated pollutant estimates</h2>
-            <table className="report-table"><thead><tr><th>Pollutant</th><th>Estimate</th><th>Unit</th></tr></thead><tbody>
-              {summary?.pollutants ? Object.entries(summary.pollutants).map(([name, value]) => <tr key={name}><td>{name.toUpperCase()}</td><td>{value.value}</td><td>{value.unit}</td></tr>) : <tr><td colSpan={3}>No pollutant summary stored.</td></tr>}
-            </tbody></table>
+            <h2>Measured inputs</h2>
+            <p>This node records a raw MQ sensor response, wind-potentiometer position, and DHT11 temperature and humidity. It has no direct PM2.5, PM10, NO₂, SO₂, H₂S, CO or VOC sensors, so those concentrations and AQI are not reported.</p>
           </section>
         </div>
         <section className="report-section">
           <h2>Candidate source areas</h2>
           <table className="report-table"><thead><tr><th>Candidate</th><th>Bearing</th><th>Distance</th><th>ETA</th><th>Data note</th></tr></thead><tbody>
-            {summary?.candidates.length ? summary.candidates.map((candidate) => <tr key={candidate.id}><td>{candidate.name}</td><td>{candidate.bearing_deg}°</td><td>{candidate.distance_km} km</td><td>{candidate.eta_min} min</td><td>{candidate.illustrative ? "Illustrative" : "Unverified"}</td></tr>) : <tr><td colSpan={5}>No candidate sources were in the upwind cone.</td></tr>}
+            {summary?.candidates.length ? summary.candidates.map((candidate) => <tr key={candidate.id}><td>{candidate.name}</td><td>{candidate.bearing_deg}°</td><td>{candidate.distance_km} km</td><td>{candidate.eta_min == null ? "Unavailable" : `${candidate.eta_min} min`}</td><td>{candidate.illustrative ? "Illustrative" : "Unverified"}</td></tr>) : <tr><td colSpan={5}>No candidate sources were in the upwind cone.</td></tr>}
           </tbody></table>
         </section>
         <section className="report-section">
@@ -96,7 +95,7 @@ export default async function EventReport({ params }: ReportProps) {
         </section>
         <footer className="report-method">
           <strong>Method and limitations</strong>
-          <p>This prototype uses a low-cost gas/smoke proxy sensor. Pollutant concentrations shown here are simulated from the sensor rise, and source positions are illustrative placeholders. Classification is a rule-based estimate to support investigation; it does not identify a specific chemical or prove a source. The system complements, but does not replace, calibrated equipment and official monitoring stations.</p>
+          <p>This prototype uses a low-cost gas/smoke proxy sensor. Its raw response does not identify a specific chemical or measure pollutant concentrations. The source classification is a rule-based estimate and source positions may be illustrative; neither proves a source. The system complements, but does not replace, calibrated equipment and official monitoring stations.</p>
         </footer>
       </article>
     </main>

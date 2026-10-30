@@ -5,7 +5,7 @@ import { supabaseConfigured } from "@/lib/supabase";
 export default async function Home({
   searchParams,
 }: {
-  searchParams: Promise<{ demo?: string; sim?: string }>;
+  searchParams: Promise<{ demo?: string }>;
 }) {
   const params = await searchParams;
   if (!supabaseConfigured) {
@@ -24,5 +24,5 @@ export default async function Home({
       </main>
     );
   }
-  return <Dashboard initialDemoMode={params.demo === "1"} initialSimulatorMode={params.sim === "1"} />;
+  return <Dashboard initialDemoMode={params.demo === "1"} />;
 }

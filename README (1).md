@@ -20,28 +20,18 @@
    supabase secrets set --project-ref bfcckzvvxqzvctvfrscd ZERNIO_API_KEY=YOUR_ZERNIO_API_KEY ZERNIO_ACCOUNT_ID=YOUR_ZERNIO_ACCOUNT_ID
    supabase secrets set --project-ref bfcckzvvxqzvctvfrscd ZERNIO_TEMPLATE_NAME=sasolsniff_alert ZERNIO_TEMPLATE_LANG=en
    ```
-4. Deploy the function to the linked project (the device key protects it):
+4. In `firmware/SasolSniffNode`, copy `secrets.example.h` to `secrets.h` and enter the Wi-Fi and device credentials locally. Never commit `secrets.h`.
+5. Deploy the function to the linked project (the device key protects it):
    ```
    supabase functions deploy ingest --project-ref bfcckzvvxqzvctvfrscd --no-verify-jwt
    ```
-5. Firmware settings: `INGEST_URL = https://bfcckzvvxqzvctvfrscd.supabase.co/functions/v1/ingest`, `DEVICE_KEY` = the secret above.
 
-Test without hardware:
-```
-curl -X POST https://bfcckzvvxqzvctvfrscd.supabase.co/functions/v1/ingest \
-  -H "x-device-key: YOUR_DEVICE_KEY" -H "Content-Type: application/json" \
-  -d '{"node_id":"sasolsniff-node-01","gas_raw":3200,"baseline_raw":1500,"wind_from_deg":330,"temperature_c":22,"humidity_pct":45}'
-```
-Send it twice a few seconds apart: an event opens on the second consecutive surge reading.
+Do not send made-up readings to the deployed ingest endpoint for testing; each accepted payload is stored as a device reading and can create a real event. Use **Run scenario** in the dashboard for local-only previews.
 
 ## 1b. Local weather (Open-Meteo, free)
 
 - The function pulls current weather for the node's coordinates from Open-Meteo (no key needed for non-commercial use) and caches it in `weather_cache` for 10 minutes. If you already ran the first `schema.sql`, run `supabase/002_weather.sql` once.
-- It uses the real wind speed for plume ETA and cone width (calm air widens the cone), and rain to reduce particle readings and open-burning likelihood. The weather and the demo vane are both shown on the dashboard so you can compare them.
-- `WIND_DIR_SOURCE=device` (default) uses your potentiometer vane for wind direction, which is what you want for the demo. `WIND_DIR_SOURCE=weather` uses the real wind direction, which is how the product would run in real life.
-  ```
-  supabase secrets set WIND_DIR_SOURCE=device
-  ```
+- Open-Meteo provides local weather context and wind speed separately. The live wind direction always comes from the device's potentiometer (`wind_from_deg`); weather can never override it. If no weather speed is available, source travel time is left unavailable rather than guessed.
 - Open-Meteo's free tier is for non-commercial use. A commercial product needs their paid API key (`OPEN_METEO_API_KEY`). Check their terms before launch.
 
 ## 2. WhatsApp alerts (Zernio)
@@ -61,24 +51,23 @@ Send it twice a few seconds apart: an event opens on the second consecutive surg
 
 Subscribe to inserts on `readings`, and changes on `events` and `alerts`. Never read `alert_recipients` from the browser.
 
-`readings.fusion` (jsonb) is the single object that drives the dashboard:
+`readings.fusion` (jsonb) contains the live analysis calculated from each actual device reading:
 
 ```
-simulated, method
+simulated: false, method
 surge, severity ("none"|"low"|"moderate"|"high"|"severe"), severity_rank 0-4
 intensity 0-1, rise, threshold, slope_per_s, sharpness, humidity_factor
-wind: { from_deg, to_deg, compass_from, compass_to, steadiness, sector_halfwidth_deg, speed_ms, speed_assumed }
+wind: { from_deg, to_deg, compass_from, compass_to, steadiness, sector_halfwidth_deg, speed_ms (or null), dir_source: "device potentiometer" }
 source_type, source_label, confidence, scores{industrial_plume, household_burning, traffic, open_burning}
 candidates[]: { id, name, kind, lat, lon, bearing_deg, distance_km, score, eta_min, illustrative }
-pollutants: { pm25, pm10, no2, so2, h2s, co, voc } each { value, unit, simulated: true }
 guidance
 ```
 
-Map drawing: node at `nodes.lat/lon`. Source bearing line points toward `wind.from_deg`, drawn as a cone of +/- `sector_halfwidth_deg`. The plume travels toward `wind.to_deg`. Mark candidates inside the cone. Only show source and candidates while `surge` is true.
-
-Be honest on screen: `simulated: true` pollutants come from the real gas rise plus rules, wind speed is assumed, and `sources` are illustrative until replaced with verified facility data.
+Map drawing: node at `nodes.lat/lon`. The device potentiometer's direction is used directly for `wind.from_deg`; the plume travels toward the opposite direction. Local weather wind speed may inform the analysis, but there is no invented fallback speed or travel-time estimate. Candidate source locations remain illustrative until replaced with verified facility data. The MQ sensor is not a calibrated pollutant analyzer; live fusion does not create pollutant concentrations or AQI.
 
 ## 4. Decisions
 
 - **GPS:** do not add a GPS module. The node does not move, indoor GPS is unreliable, and the backend already knows the position from `nodes`. Set it with `update nodes set lat=..., lon=... where id='sasolsniff-node-01';`. In the React app you can use the browser's geolocation only to centre the map on the viewer. A GPS module only makes sense later for moving nodes.
-- **Button:** short press re-baselines (calibrates to clean air), long press starts a labelled test surge, so you can trigger the demo on stage even if the smoke source fails.
+- **Button:** a short press re-baselines the gas sensor. The updated firmware does not add artificial gas spikes; use the dashboard's explicit simulator control for a local preview.
+- **Wind dial:** the sketch reports raw GPIO 32 ADC counts and compass direction every second. If ADC counts barely change while turning the pot, check that its outer pins are wired to 3.3 V and GND and its wiper to GPIO 32. Set `WIND_RAW_MIN` and `WIND_RAW_MAX` to measured endpoints if your circuit does not span the ADC range.
+- **Safety:** do not use a flame, lighter, butane, smoke or aerosol near the MQ sensor or electronics. Only use manufacturer-approved calibration equipment with qualified supervision.

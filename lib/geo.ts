@@ -1,5 +1,11 @@
 export type LatLon = [number, number];
 
+const COMPASS_POINTS = ["N", "NNE", "NE", "ENE", "E", "ESE", "SE", "SSE", "S", "SSW", "SW", "WSW", "W", "WNW", "NW", "NNW"];
+
+export function compassDirection(degrees: number): string {
+  return COMPASS_POINTS[Math.round((((degrees % 360) + 360) % 360) / 22.5) % COMPASS_POINTS.length];
+}
+
 export function destinationPoint(lat: number, lon: number, bearingDeg: number, distanceKm: number): LatLon {
   const radiusKm = 6371;
   const angularDistance = distanceKm / radiusKm;

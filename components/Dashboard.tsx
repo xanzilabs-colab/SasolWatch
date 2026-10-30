@@ -41,6 +41,7 @@ import { WeatherPanel } from "./WeatherPanel";
 import { useLiveNode } from "@/lib/useLiveNode";
 import { createSimulatorReading, simulatorEvent, type SimulatorSettings } from "@/lib/simulator";
 import type { AlertRow, EventRow, Fusion, NodeRow, ReadingRow, SourceKind, SourceRow } from "@/lib/types";
+import { compassDirection } from "@/lib/geo";
 
 const PlumeMap = dynamic(() => import("./PlumeMap"), {
   ssr: false,
@@ -161,15 +162,13 @@ function ViewHeading({ title, description, actions }: { title: string; descripti
 
 export function Dashboard({
   initialDemoMode,
-  initialSimulatorMode,
 }: {
   initialDemoMode: boolean;
-  initialSimulatorMode: boolean;
 }) {
   const [now, setNow] = useState(0);
-  const [simulatorMode, setSimulatorMode] = useState(initialSimulatorMode);
-  const [simulatorRunning, setSimulatorRunning] = useState(initialSimulatorMode);
-  const [simulatorOpen, setSimulatorOpen] = useState(initialSimulatorMode);
+  const [simulatorMode, setSimulatorMode] = useState(false);
+  const [simulatorRunning, setSimulatorRunning] = useState(false);
+  const [simulatorOpen, setSimulatorOpen] = useState(false);
   const [realLifeOpen, setRealLifeOpen] = useState(false);
   const [activeView, setActiveView] = useState<ViewId>("overview");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -255,15 +254,25 @@ export function Dashboard({
   }, [simulatorRunning]);
 
   const node = live.node ?? defaultNode;
-  const readings = simulatorMode ? simulatorReadings : live.readings;
-  const events = simulatorMode ? simulatorEvents : live.events;
-  const alerts = simulatorMode ? simulatorAlerts : live.alerts;
+  const mapNode = simulatorMode ? node : live.node;
+  const readings = simulatorMode ? simulatorReadings : live.readings.filter((reading) => !reading.test_mode);
+  const events = simulatorMode ? simulatorEvents : live.events.filter((event) => !event.test_mode);
+  const testEventIds = new Set(live.events.filter((event) => event.test_mode).map((event) => event.id));
+  const alerts = simulatorMode
+    ? simulatorAlerts
+    : live.alerts.filter((alert) => alert.event_id == null || !testEventIds.has(alert.event_id));
   const sources: SourceRow[] = live.sources;
+  const analysisSources = simulatorMode ? sources : sources.filter((source) => !source.illustrative);
   const latest = readings.at(-1) ?? null;
   const activeEvent = simulatorMode
     ? simulatorEvents.find((event) => event.status === "open") ?? null
-    : live.activeEvent;
-  const fusion = latest?.fusion ?? activeEvent?.summary ?? null;
+    : live.activeEvent?.test_mode ? null : live.activeEvent;
+  const fusion = simulatorMode
+    ? latest?.fusion ?? activeEvent?.summary ?? null
+    : latest?.fusion?.simulated === false && latest.fusion.method === "rule-based fusion v2 verified sources"
+      ? latest.fusion
+      : activeEvent?.summary?.simulated === false && activeEvent.summary.method === "rule-based fusion v2 verified sources"
+        ? activeEvent.summary : null;
   const online = simulatorMode
     ? simulatorRunning && Boolean(latest)
     : Boolean(latest && now - Date.parse(latest.received_at) < 15000);
@@ -275,6 +284,10 @@ export function Dashboard({
     second: "2-digit",
   }).format(now);
   const severity = fusion?.surge || activeEvent ? fusion?.severity ?? activeEvent?.severity ?? "none" : "none";
+  const windFromDeg = simulatorMode
+    ? fusion?.wind.from_deg ?? latest?.wind_from_deg ?? null
+    : latest?.wind_from_deg ?? null;
+  const windFromLabel = windFromDeg == null ? "—" : `${compassDirection(windFromDeg)} ${windFromDeg.toFixed(1)}°`;
   const detail = viewDetails[activeView];
   const ingestUrl = "https://bfcckzvvxqzvctvfrscd.supabase.co/functions/v1/ingest";
   const filteredSources = useMemo(() => sources.filter((source) => {
@@ -287,8 +300,8 @@ export function Dashboard({
   ), [eventFilter, events, severityFilter]);
   const filteredAlerts = useMemo(() => alerts.filter((alert) => alertFilter === "all" || alert.status === alertFilter), [alertFilter, alerts]);
   const latestReading = latest;
-  const indicativeAqi = fusion ? Math.round(25 + pollutantReference.reduce((maximum, pollutant) => {
-    const value = fusion.pollutants[pollutant.key]?.value ?? 0;
+  const indicativeAqi = simulatorMode && fusion?.pollutants ? Math.round(25 + pollutantReference.reduce((maximum, pollutant) => {
+    const value = fusion.pollutants?.[pollutant.key]?.value ?? 0;
     return Math.max(maximum, value / pollutant.limit);
   }, 0) * 160) : null;
   const aqiBand = indicativeAqi == null
@@ -379,7 +392,7 @@ export function Dashboard({
   };
   const stopSimulator = () => setSimulatorRunning(false);
   const polling = !simulatorMode && live.polling;
-  const active = Boolean(fusion?.surge || activeEvent);
+  const active = Boolean(fusion?.surge || latest?.surge || activeEvent);
   const canExportReadings = readings.length > 0;
   const headerStatus = simulatorMode
     ? simulatorRunning ? "Simulator running" : "Simulator paused"
@@ -387,7 +400,7 @@ export function Dashboard({
   const projectUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
   const supabaseConnected = Boolean(projectUrl && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
 
-  const pollutantTable = (
+  const pollutantTable = simulatorMode ? (
     <Panel title="Pollutant estimates" eyebrow="INDICATIVE AIR PROFILE" simulated={Boolean(fusion?.pollutants)}>
       <p className="table-caption">Estimates are derived from sensor response; they are not direct pollutant measurements. Reference values are comparison guides, not an official AQI.</p>
       <div className="table-scroll">
@@ -395,7 +408,7 @@ export function Dashboard({
           <thead><tr><th>Pollutant</th><th className="numeric-cell">Estimate</th><th className="numeric-cell">Reference</th><th>Share of reference</th><th>Status</th></tr></thead>
           <tbody>
             {pollutantReference.map((pollutant) => {
-              const item = fusion?.pollutants[pollutant.key];
+              const item = fusion?.pollutants?.[pollutant.key];
               const value = item?.value ?? null;
               const ratio = value == null ? 0 : value / pollutant.limit;
               const share = Math.round(ratio * 100);
@@ -412,6 +425,24 @@ export function Dashboard({
           </tbody>
         </table>
       </div>
+    </Panel>
+  ) : (
+    <Panel title="Measured device inputs" eyebrow="DIRECT SENSOR DATA">
+      <p className="table-caption">These are the latest values received from your ESP32. This hardware does not measure individual pollutant concentrations or an AQI.</p>
+      <div className="table-scroll">
+        <table className="data-table">
+          <thead><tr><th>Measurement</th><th>Latest device value</th><th>Input</th></tr></thead>
+          <tbody>
+            <tr><td><strong>Gas sensor response</strong></td><td className="mono">{latest?.gas_raw.toLocaleString() ?? "—"} ADC counts</td><td>MQ analog sensor · GPIO 34</td></tr>
+            <tr><td><strong>Clean-air baseline</strong></td><td className="mono">{latest?.baseline_raw?.toLocaleString() ?? "—"} ADC counts</td><td>Measured by device firmware</td></tr>
+            <tr><td><strong>Wind from</strong></td><td className="mono">{windFromLabel}</td><td>Potentiometer · raw ADC {latest?.wind_raw ?? "—"} / 4095</td></tr>
+            <tr><td><strong>Temperature</strong></td><td className="mono">{latest?.temperature_c == null ? "—" : `${latest.temperature_c.toFixed(1)} °C`}</td><td>DHT11 on node</td></tr>
+            <tr><td><strong>Humidity</strong></td><td className="mono">{latest?.humidity_pct == null ? "—" : `${latest.humidity_pct.toFixed(1)}%`}</td><td>DHT11 on node</td></tr>
+            <tr><td><strong>Wi-Fi signal</strong></td><td className="mono">{latest?.rssi == null ? "—" : `${latest.rssi} dBm`}</td><td>ESP32-reported RSSI</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p className="data-caveat">The MQ sensor reports a raw response, not calibrated gas concentration. No PM2.5, PM10, NO₂, SO₂, H₂S, CO or VOC level is measured by this hardware.</p>
     </Panel>
   );
 
@@ -433,25 +464,27 @@ export function Dashboard({
       )}
       {demoMode && <DemoPlaybook latest={simulatorMode ? null : latest} />}
       <section className="status-strip" aria-label="Station summary">
-        <MetricCard label="Station" value={online || simulatorMode ? "Online" : "Offline"} detail={`${node.name} · Sasolburg`} state={online || simulatorMode ? "good" : "neutral"} />
-        <MetricCard label="Indicative AQI" value={indicativeAqi ?? "—"} detail={aqiBand} state={indicativeAqi == null ? "neutral" : indicativeAqi >= 100 ? "warning" : "good"} />
+        <MetricCard label="Station" value={online ? "Online" : simulatorMode ? "Simulator" : "Offline"} detail={`${node.name} · Sasolburg`} state={online ? "good" : "neutral"} />
+        {simulatorMode
+          ? <MetricCard label="Indicative AQI · simulated" value={indicativeAqi ?? "—"} detail={aqiBand} state={indicativeAqi == null ? "neutral" : indicativeAqi >= 100 ? "warning" : "good"} />
+          : <MetricCard label="Wind potentiometer" value={latest?.wind_raw ?? "—"} detail="Raw ADC · expected range 0–4095" />}
         <MetricCard label="Gas response" value={<>{latestReading?.gas_raw.toLocaleString() ?? "—"}<small> raw</small></>} detail={fusion ? `Rise ${Math.round(fusion.rise)} · threshold ${Math.round(fusion.threshold)}` : "Awaiting sensor data"} state={fusion?.surge ? "critical" : latestReading ? "good" : "neutral"} />
-        <MetricCard label="Wind · from" value={fusion ? `${Math.round(fusion.wind.from_deg)}° ${fusion.wind.compass_from}` : "—"} detail={fusion ? `${fusion.wind.speed_ms.toFixed(1)} m/s · ${fusion.wind.dir_source}` : "Awaiting wind data"} />
-        <MetricCard label="Upwind sector" value={active && fusion ? `${fusion.wind.compass_from} ±${fusion.wind.sector_halfwidth_deg}°` : "—"} detail={active ? "Possible origin area" : "No active surge"} state={active ? "warning" : "neutral"} />
+        <MetricCard label="Wind · from" value={windFromLabel} detail={simulatorMode ? "Local scenario direction" : latest?.wind_raw == null ? "Waiting for potentiometer ADC" : `Device potentiometer · ADC ${latest.wind_raw}`} />
+        <MetricCard label="Upwind sector" value={active && fusion && windFromDeg != null ? `${compassDirection(windFromDeg)} ±${fusion.wind.sector_halfwidth_deg}°` : "—"} detail={active ? "Screening sector from device wind direction" : "No active surge"} state={active ? "warning" : "neutral"} />
         <MetricCard label="Events · alerts" value={`${events.length} · ${alerts.length}`} detail="Recorded for this node" state={alerts.length ? "warning" : "neutral"} />
       </section>
 
       <div className="content-grid overview-map-grid">
-        <section className="span-8"><PlumeMap node={node} sources={sources} fusion={fusion} simulator={simulatorMode} /></section>
+        <section className="span-8"><PlumeMap node={mapNode} sources={analysisSources} fusion={fusion} simulator={simulatorMode} windFromDeg={windFromDeg} windRaw={simulatorMode ? null : latest?.wind_raw ?? null} /></section>
         <div className="content-stack span-4">
-          <ClassifierPanel fusion={fusion} active={active} simulated={simulatorMode} readingTime={latest?.ts} />
-          <CandidateList fusion={fusion} active={active} simulated={simulatorMode} sourceCount={sources.length} />
+          <ClassifierPanel fusion={fusion} active={active} simulated={simulatorMode} reading={latest} />
+          <CandidateList fusion={fusion} active={active} simulated={simulatorMode} sourceCount={analysisSources.length} />
         </div>
       </div>
       <div className="content-grid">
         <section className="span-7">{pollutantTable}</section>
         <div className="content-stack span-5">
-          <WeatherPanel fusion={fusion} node={node} simulated={simulatorMode} />
+          <WeatherPanel fusion={fusion} node={node} simulated={simulatorMode} deviceWindFrom={windFromDeg} />
           <ConditionsCard latest={latest} simulated={simulatorMode} />
         </div>
       </div>
@@ -478,11 +511,11 @@ export function Dashboard({
       case "map":
         return (
           <div className="content-grid map-view-grid">
-            <section className="span-8"><PlumeMap node={node} sources={sources} fusion={fusion} simulator={simulatorMode} /></section>
+            <section className="span-8"><PlumeMap node={mapNode} sources={analysisSources} fusion={fusion} simulator={simulatorMode} windFromDeg={windFromDeg} windRaw={simulatorMode ? null : latest?.wind_raw ?? null} /></section>
             <div className="content-stack span-4">
-              <ClassifierPanel fusion={fusion} active={active} simulated={simulatorMode} readingTime={latest?.ts} />
-              <CandidateList fusion={fusion} active={active} simulated={simulatorMode} sourceCount={sources.length} />
-              <WeatherPanel fusion={fusion} node={node} simulated={simulatorMode} />
+              <ClassifierPanel fusion={fusion} active={active} simulated={simulatorMode} reading={latest} />
+              <CandidateList fusion={fusion} active={active} simulated={simulatorMode} sourceCount={analysisSources.length} />
+              <WeatherPanel fusion={fusion} node={node} simulated={simulatorMode} deviceWindFrom={windFromDeg} />
             </div>
           </div>
         );
@@ -496,7 +529,7 @@ export function Dashboard({
             </div>
             <div className="content-grid">
               <section className="span-6"><ConditionsCard latest={latest} simulated={simulatorMode} /></section>
-              <section className="span-6"><WeatherPanel fusion={fusion} node={node} simulated={simulatorMode} /></section>
+              <section className="span-6"><WeatherPanel fusion={fusion} node={node} simulated={simulatorMode} deviceWindFrom={windFromDeg} /></section>
             </div>
           </>
         );
@@ -535,7 +568,7 @@ export function Dashboard({
         return (
           <>
             <div className="status-strip device-status-strip">
-              <MetricCard label="Connection" value={online || simulatorMode ? "Connected" : "Offline"} detail={simulatorMode ? "Local simulator" : online ? "Latest reading is current" : "Waiting for device data"} state={online || simulatorMode ? "good" : "neutral"} />
+              <MetricCard label="Connection" value={online ? "Connected" : "Offline"} detail={simulatorMode ? "Local simulator" : online ? "Latest reading is current" : "Waiting for device data"} state={online ? "good" : "neutral"} />
               <MetricCard label="Last reading" value={latest ? formatSast(latest.received_at) : "—"} detail="South Africa Standard Time" />
               <MetricCard label="Firmware" value={latest?.fw ?? "—"} detail={latest ? "Reported by device" : "No firmware report"} />
               <MetricCard label="Wi-Fi signal" value={latest?.rssi == null ? "—" : `${latest.rssi} dBm`} detail={latest?.rssi == null ? "No signal data received" : "Reported by device"} />
@@ -548,6 +581,8 @@ export function Dashboard({
                   <div><span>Coordinates</span><strong className="mono">{node.lat.toFixed(4)}, {node.lon.toFixed(4)}</strong></div>
                   <div><span>Last device contact</span><strong>{formatSast(latest?.received_at ?? node.last_seen)}</strong></div>
                   <div><span>Sensor warm-up</span><strong>{latest ? latest.warming_up ? "In progress" : "Complete" : "No reading yet"}</strong></div>
+                  <div><span>Wind potentiometer ADC</span><strong className="mono">{latest?.wind_raw == null ? "No reading" : `${latest.wind_raw} / 4095`}</strong></div>
+                  <div><span>Wind direction from device</span><strong>{windFromLabel}</strong></div>
                 </div>
               </Panel></section>
               <section className="span-5"><ConditionsCard latest={latest} simulated={simulatorMode} /></section>
@@ -583,10 +618,10 @@ export function Dashboard({
             <div className="guide-grid">
               {[
                 ["01", "Sensor node", "The ESP32 reports gas-sensor response, temperature, humidity, wind-vane direction and signal strength."],
-                ["02", "Data and weather", "Supabase stores device readings. Local weather is fetched separately and can be compared with the demo wind vane."],
+                ["02", "Data and weather", "Supabase stores the ESP32 readings. Open-Meteo weather is shown separately; the wind direction always comes from the device potentiometer."],
                 ["03", "Surge detection", "Rules compare gas response to a clean-air baseline and look at the change over time."],
                 ["04", "Wind-sector analysis", "When a surge is detected, the dashboard checks illustrative registered source locations in the upwind sector."],
-                ["05", "Estimates and alerts", "Pollutant estimates are simulated from the sensor response. Notification records may be previews; inspect their status."],
+                ["05", "Estimates and alerts", "Live mode shows no invented pollutant concentrations or AQI. The optional simulator is local and starts only when you choose it. Notification records may be previews; inspect their status."],
                 ["06", "Investigation", "Review the timeline and event report, then verify potential incidents using official monitoring equipment."],
               ].map(([number, title, copy]) => <article className="guide-step" key={number}><span>{number}</span><div><h2>{title}</h2><p>{copy}</p></div></article>)}
             </div>

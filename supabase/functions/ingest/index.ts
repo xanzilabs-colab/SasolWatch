@@ -1,5 +1,5 @@
 // SasolSniff ingest Edge Function (deployed from supabase/functions/ingest).
-// Receives ESP32 readings, fuses them into surge / wind / source / pollutant estimates,
+// Receives ESP32 readings, analyzes sensor response and device wind direction,
 // tracks surge events and sends WhatsApp alerts through Zernio.
 //
 // Deploy:  supabase functions deploy ingest --no-verify-jwt
@@ -18,8 +18,6 @@ const TEMPLATE_LANG = Deno.env.get("ZERNIO_TEMPLATE_LANG") ?? "en";
 const ALERT_DRY_RUN = (Deno.env.get("ALERT_DRY_RUN") ?? "true") !== "false";
 const ALERT_MIN_SEVERITY = Deno.env.get("ALERT_MIN_SEVERITY") ?? "moderate";
 const ALERT_COOLDOWN_MIN = Number(Deno.env.get("ALERT_COOLDOWN_MIN") ?? "10");
-// "device" = use the demo wind vane (potentiometer). "weather" = use the real local wind direction from Open-Meteo.
-const WIND_DIR_SOURCE = Deno.env.get("WIND_DIR_SOURCE") ?? "device";
 // Open-Meteo is free for non-commercial use without a key. For commercial use set OPEN_METEO_API_KEY.
 const OPEN_METEO_API_KEY = Deno.env.get("OPEN_METEO_API_KEY") ?? "";
 const WEATHER_TTL_MIN = Number(Deno.env.get("WEATHER_TTL_MIN") ?? "10");
@@ -36,7 +34,7 @@ const json = (body: unknown, status = 200) =>
 
 // ---------- helpers ----------
 const clamp = (x: number, a: number, b: number) => Math.min(b, Math.max(a, x));
-const num = (v: unknown, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
+const num = (v: unknown, d = 0) => (v != null && Number.isFinite(Number(v)) ? Number(v) : d);
 const norm360 = (d: number) => ((d % 360) + 360) % 360;
 const angDiff = (a: number, b: number) => {
   const d = Math.abs(norm360(a) - norm360(b));
@@ -104,7 +102,7 @@ async function getWeather(node: any) {
   }
 }
 
-// ---------- fusion model (rule-based, transparent, simulated) ----------
+// ---------- rule-based analysis of measured device readings ----------
 const SEVERITY = ["none", "low", "moderate", "high", "severe"];
 const SOURCE_LABEL: Record<string, string> = {
   industrial_plume: "industrial plume",
@@ -120,16 +118,6 @@ const KIND_TO_TYPE: Record<string, string> = {
   road: "traffic",
   waste_treatment: "open_burning",
 };
-// relative pollutant signature of each source type (0..1)
-const PROFILE: Record<string, Record<string, number>> = {
-  industrial_plume: { pm25: 0.4, pm10: 0.3, no2: 0.5, so2: 0.9, h2s: 0.6, co: 0.2, voc: 0.8 },
-  household_burning: { pm25: 1.0, pm10: 0.8, no2: 0.2, so2: 0.3, h2s: 0.05, co: 0.9, voc: 0.5 },
-  traffic: { pm25: 0.45, pm10: 0.35, no2: 0.9, so2: 0.05, h2s: 0, co: 0.8, voc: 0.5 },
-  open_burning: { pm25: 0.9, pm10: 0.8, no2: 0.2, so2: 0.15, h2s: 0.1, co: 0.8, voc: 0.9 },
-};
-const BACKGROUND: Record<string, number> = { pm25: 18, pm10: 30, no2: 15, so2: 5, h2s: 1, co: 0.6, voc: 60 };
-const PEAK: Record<string, number> = { pm25: 300, pm10: 450, no2: 250, so2: 400, h2s: 150, co: 40, voc: 1200 };
-const UNIT: Record<string, string> = { pm25: "ug/m3", pm10: "ug/m3", no2: "ug/m3", so2: "ug/m3", h2s: "ug/m3", co: "mg/m3", voc: "ppb" };
 const GUIDANCE: Record<string, string> = {
   none: "Air readings are normal.",
   low: "Slightly elevated readings. No action needed, monitoring continues.",
@@ -139,12 +127,10 @@ const GUIDANCE: Record<string, string> = {
 };
 
 function fuse(p: {
-  gas: number; baseline: number; warming: boolean; temp: number; rh: number;
+  gas: number; baseline: number; warming: boolean; temp: number | null; rh: number | null;
   windFrom: number; ts: Date; prev: any[]; node: any; sources: any[]; weather: any | null;
-  windDirSource?: string;
 }) {
   const { gas, baseline, warming, temp, rh, windFrom, ts, prev, node, sources, weather } = p;
-  const windDirSource = p.windDirSource ?? "device";
 
   const rise = gas - baseline;
   const threshold = Math.max(150, baseline * 0.25);
@@ -165,9 +151,11 @@ function fuse(p: {
   // wind: direction the wind comes FROM; the plume travels toward the opposite direction
   const windHist = [...prev.slice(-5).map((r) => num(r.wind_from_deg, windFrom)), windFrom];
   const steady = windSteadiness(windHist);
-  const wsWeather = weather && Number.isFinite(Number(weather.wind_speed_ms)) ? Number(weather.wind_speed_ms) : null;
-  const ws = wsWeather ?? num(node.default_wind_speed_ms, 3);
-  const calm = ws < 1.5 ? 15 : 0; // light wind: plume direction is less certain, widen the cone
+  const wsWeather = weather?.wind_speed_ms != null && Number.isFinite(Number(weather.wind_speed_ms))
+    ? Number(weather.wind_speed_ms)
+    : null;
+  const ws = wsWeather;
+  const calm = ws != null && ws < 1.5 ? 15 : 0; // light wind: plume direction is less certain, widen the cone
   const halfWidth = Math.round(clamp(60 * (1 - steady) + 15 + calm, 15, 75));
   const windTo = norm360(windFrom + 180);
   const raining = !!weather && num(weather.precipitation_mm, 0) > 0.1;
@@ -188,12 +176,12 @@ function fuse(p: {
   const hour = localHourSAST(ts);
   const rush = (hour >= 6 && hour < 9) || (hour >= 16 && hour < 18.5) ? 1 : 0;
   const eveMorn = (hour >= 17 && hour < 23) || (hour >= 4 && hour < 8) ? 1 : 0;
-  const cold = temp < 15 ? 1 : 0;
+  const cold = temp != null && temp < 15 ? 1 : 0;
   const raw: Record<string, number> = {
     industrial_plume: 0.15 + 0.35 * sharp * (indIn ? 1 : 0.5) + 0.3 * (indIn ? 1 : 0) + 0.1 * intensity,
     household_burning: 0.15 + 0.35 * (1 - sharp) * eveMorn + 0.15 * cold + 0.2 * (resIn ? 1 : 0),
     traffic: 0.1 + 0.35 * rush + 0.2 * (roadIn ? 1 : 0) + 0.15 * (1 - sharp),
-    open_burning: (0.1 + 0.25 * sharp * (indIn ? 0.4 : 1) + 0.2 * (wasteIn ? 1 : 0) + 0.15 * (rh < 50 ? 1 : 0)) * (raining ? 0.7 : 1),
+    open_burning: (0.1 + 0.25 * sharp * (indIn ? 0.4 : 1) + 0.2 * (wasteIn ? 1 : 0) + 0.15 * (rh != null && rh < 50 ? 1 : 0)) * (raining ? 0.7 : 1),
   };
   const sum = Object.values(raw).reduce((a, b) => a + b, 0);
   const scores: Record<string, number> = {};
@@ -211,49 +199,42 @@ function fuse(p: {
         id: c.id, name: c.name, kind: c.kind, lat: c.lat, lon: c.lon,
         bearing_deg: c.bearing_deg, distance_km: c.distance_km,
         score: Math.round(score * 100) / 100,
-        eta_min: Math.round(((c.distance_km * 1000) / Math.max(0.5, ws)) / 60),
+        eta_min: ws == null ? null : Math.round(((c.distance_km * 1000) / Math.max(0.5, ws)) / 60),
         illustrative: c.illustrative,
       };
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, 3);
 
-  // simulated pollutant concentrations driven by the REAL gas rise, blended by source-type scores
-  const rhFactor = 1 + Math.max(0, rh - 70) / 100; // humid air makes optical/gas sensors over-read
-  const pollutants: Record<string, { value: number; unit: string; simulated: true }> = {};
-  for (const k of Object.keys(BACKGROUND)) {
-    let mix = 0;
-    for (const t of Object.keys(scores)) mix += scores[t] * PROFILE[t][k];
-    let v = BACKGROUND[k] + (surge ? intensity : intensity * 0.3) * PEAK[k] * mix;
-    if (k === "pm25" || k === "pm10") v = (v / rhFactor) * (raining ? 0.75 : 1); // rain washes particles out of the air
-    pollutants[k] = { value: Math.round(v * 10) / 10, unit: UNIT[k], simulated: true };
-  }
+  const rhFactor = rh == null ? 1 : 1 + Math.max(0, rh - 70) / 100;
 
   const severity = SEVERITY[sevRank];
   return {
-    simulated: true,
-    method: "rule-based fusion v1",
+    simulated: false,
+    method: "rule-based fusion v2 verified sources",
     surge, severity, severity_rank: sevRank,
     intensity: Math.round(intensity * 1000) / 1000,
     rise: Math.round(rise), threshold: Math.round(threshold),
     slope_per_s: Math.round(slope * 10) / 10, sharpness: Math.round(sharp * 100) / 100,
     humidity_factor: Math.round(rhFactor * 100) / 100,
     wind: {
-      from_deg: Math.round(windFrom), to_deg: Math.round(windTo),
+      from_deg: Number(windFrom.toFixed(1)), to_deg: Number(windTo.toFixed(1)),
       compass_from: compass(windFrom), compass_to: compass(windTo),
       steadiness: Math.round(steady * 100) / 100, sector_halfwidth_deg: halfWidth,
-      speed_ms: Math.round(ws * 10) / 10, speed_assumed: wsWeather === null,
-      speed_source: wsWeather === null ? "assumed default" : "open-meteo",
-      dir_source: windDirSource === "weather" && weather ? "open-meteo" : "demo vane",
+      speed_ms: ws == null ? null : Math.round(ws * 10) / 10, speed_assumed: false,
+      speed_source: wsWeather === null ? "unavailable" : "open-meteo",
+      dir_source: "device potentiometer",
     },
     weather: weather ? {
       ...weather,
-      vane_vs_weather_diff_deg: Number.isFinite(Number(weather.wind_dir_deg)) ? Math.round(angDiff(windFrom, Number(weather.wind_dir_deg))) : null,
+      vane_vs_weather_diff_deg: weather.wind_dir_deg != null && Number.isFinite(Number(weather.wind_dir_deg))
+        ? Math.round(angDiff(windFrom, Number(weather.wind_dir_deg)))
+        : null,
       raining,
     } : null,
     source_type: sourceType, source_label: SOURCE_LABEL[sourceType],
     confidence: Math.round(confidence * 100) / 100, scores,
-    candidates, pollutants, guidance: GUIDANCE[severity],
+    candidates, guidance: GUIDANCE[severity],
   };
 }
 
@@ -338,6 +319,24 @@ Deno.serve(async (req) => {
   const nodeId = String(b.node_id ?? "sasolsniff-node-01").slice(0, 64);
   const gas = Math.round(num(b.gas_raw, NaN));
   if (!Number.isFinite(gas) || gas < 0 || gas > 4095) return json({ error: "gas_raw missing or out of range" }, 400);
+  const rawWindFrom = Number(b.wind_from_deg);
+  if (b.wind_from_deg == null || !Number.isFinite(rawWindFrom) || rawWindFrom < 0 || rawWindFrom > 360) {
+    return json({ error: "wind_from_deg missing or out of range" }, 400);
+  }
+  const baseline = Number(b.baseline_raw);
+  if (!Number.isFinite(baseline) || baseline < 0 || baseline > 4095) {
+    return json({ error: "baseline_raw missing or out of range" }, 400);
+  }
+  const temperature = typeof b.temperature_c === "number" && Number.isFinite(b.temperature_c) && b.temperature_c >= -40 && b.temperature_c <= 80
+    ? b.temperature_c
+    : null;
+  const humidity = typeof b.humidity_pct === "number" && Number.isFinite(b.humidity_pct) && b.humidity_pct >= 0 && b.humidity_pct <= 100
+    ? b.humidity_pct
+    : null;
+  const windRaw = Number(b.wind_raw);
+  if (!Number.isInteger(windRaw) || windRaw < 0 || windRaw > 4095) {
+    return json({ error: "wind_raw missing or out of range" }, 400);
+  }
 
   const now = new Date();
   let ts = b.ts ? new Date(b.ts) : now;
@@ -352,21 +351,18 @@ Deno.serve(async (req) => {
   if (!node) return json({ error: "node lookup failed" }, 500);
 
   const { data: histDesc } = await sb.from("readings")
-    .select("ts,gas_raw,wind_from_deg,surge").eq("node_id", nodeId).order("ts", { ascending: false }).limit(12);
-  const prev = (histDesc ?? []).reverse();
-  const { data: sources } = await sb.from("sources").select("*");
+    .select("ts,gas_raw,wind_from_deg,surge,test_mode").eq("node_id", nodeId).order("ts", { ascending: false }).limit(30);
+  const prev = (histDesc ?? []).filter((reading) => !reading.test_mode).slice(0, 12).reverse();
+  const { data: sources, error: sourcesError } = await sb.from("sources").select("*").eq("illustrative", false);
+  if (sourcesError) return json({ error: "source lookup failed" }, 500);
 
-  const baseline = num(b.baseline_raw, gas);
   const warming = !!b.warming_up;
   const testMode = !!b.test_mode;
   const weather = await getWeather(node);
-  let windFrom = norm360(num(b.wind_from_deg, 0));
-  if (WIND_DIR_SOURCE === "weather" && weather && Number.isFinite(Number(weather.wind_dir_deg))) {
-    windFrom = norm360(Number(weather.wind_dir_deg)); // real-life mode: wind direction from the weather service
-  }
+  const windFrom = norm360(rawWindFrom);
   const fusion = fuse({
-    gas, baseline, warming, temp: num(b.temperature_c, 20), rh: num(b.humidity_pct, 50),
-    windFrom, ts, prev, node, sources: sources ?? [], weather, windDirSource: WIND_DIR_SOURCE,
+    gas, baseline, warming, temp: temperature, rh: humidity,
+    windFrom, ts, prev, node, sources: (sources ?? []).filter((source: any) => !source.illustrative), weather,
   });
 
   // event tracking: open after 2 consecutive surge readings, close after 2 consecutive clear readings
@@ -405,8 +401,8 @@ Deno.serve(async (req) => {
   // store the reading
   const ins = await sb.from("readings").insert({
     node_id: nodeId, ts: ts.toISOString(), gas_raw: gas, baseline_raw: baseline,
-    wind_raw: b.wind_raw ?? null, wind_from_deg: windFrom,
-    temperature_c: num(b.temperature_c, 0), humidity_pct: num(b.humidity_pct, 0),
+    wind_raw: windRaw, wind_from_deg: windFrom,
+    temperature_c: temperature, humidity_pct: humidity,
     device_surge: !!b.device_surge, warming_up: warming, test_mode: testMode,
     surge: fusion.surge, event_id: ev?.id ?? null, fusion, rssi: b.rssi ?? null, fw: b.fw ?? null,
   });
@@ -419,6 +415,7 @@ Deno.serve(async (req) => {
 
   return json({
     ok: true, surge: fusion.surge, severity: fusion.severity, event_id: ev?.id ?? null,
+    wind_raw: windRaw, wind_from_deg: windFrom, compass_from: compass(windFrom),
     source_type: fusion.source_type, alerts: alertRows.length,
   });
 });

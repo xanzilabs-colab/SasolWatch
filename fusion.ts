@@ -5,7 +5,7 @@
 
 // ---------- helpers ----------
 export const clamp = (x: number, a: number, b: number) => Math.min(b, Math.max(a, x));
-export const num = (v: unknown, d = 0) => (Number.isFinite(Number(v)) ? Number(v) : d);
+export const num = (v: unknown, d = 0) => (v != null && Number.isFinite(Number(v)) ? Number(v) : d);
 export const norm360 = (d: number) => ((d % 360) + 360) % 360;
 export const angDiff = (a: number, b: number) => {
   const d = Math.abs(norm360(a) - norm360(b));
@@ -37,7 +37,7 @@ export function windSteadiness(degs: number[]) {
   return clamp(Math.hypot(x, y), 0, 1);
 }
 
-// ---------- fusion model (rule-based, transparent, simulated) ----------
+// ---------- rule-based analysis of measured device readings ----------
 export const SEVERITY = ["none", "low", "moderate", "high", "severe"];
 export const SOURCE_LABEL: Record<string, string> = {
   industrial_plume: "industrial plume",
@@ -72,12 +72,12 @@ export const GUIDANCE: Record<string, string> = {
 };
 
 export function fuse(p: {
-  gas: number; baseline: number; warming: boolean; temp: number; rh: number;
+  gas: number; baseline: number; warming: boolean; temp: number | null; rh: number | null;
   windFrom: number; ts: Date; prev: any[]; node: any; sources: any[]; weather: any | null;
-  windDirSource?: string;
+  simulated?: boolean;
 }) {
   const { gas, baseline, warming, temp, rh, windFrom, ts, prev, node, sources, weather } = p;
-  const windDirSource = p.windDirSource ?? "device";
+  const simulated = p.simulated ?? false;
 
   const rise = gas - baseline;
   const threshold = Math.max(150, baseline * 0.25);
@@ -98,9 +98,11 @@ export function fuse(p: {
   // wind: direction the wind comes FROM; the plume travels toward the opposite direction
   const windHist = [...prev.slice(-5).map((r) => num(r.wind_from_deg, windFrom)), windFrom];
   const steady = windSteadiness(windHist);
-  const wsWeather = weather && Number.isFinite(Number(weather.wind_speed_ms)) ? Number(weather.wind_speed_ms) : null;
-  const ws = wsWeather ?? num(node.default_wind_speed_ms, 3);
-  const calm = ws < 1.5 ? 15 : 0; // light wind: plume direction is less certain, widen the cone
+  const wsWeather = weather?.wind_speed_ms != null && Number.isFinite(Number(weather.wind_speed_ms))
+    ? Number(weather.wind_speed_ms)
+    : null;
+  const ws = wsWeather ?? (simulated ? num(node.default_wind_speed_ms, 3) : null);
+  const calm = ws != null && ws < 1.5 ? 15 : 0; // light wind: plume direction is less certain, widen the cone
   const halfWidth = Math.round(clamp(60 * (1 - steady) + 15 + calm, 15, 75));
   const windTo = norm360(windFrom + 180);
   const raining = !!weather && num(weather.precipitation_mm, 0) > 0.1;
@@ -121,12 +123,12 @@ export function fuse(p: {
   const hour = localHourSAST(ts);
   const rush = (hour >= 6 && hour < 9) || (hour >= 16 && hour < 18.5) ? 1 : 0;
   const eveMorn = (hour >= 17 && hour < 23) || (hour >= 4 && hour < 8) ? 1 : 0;
-  const cold = temp < 15 ? 1 : 0;
+  const cold = temp != null && temp < 15 ? 1 : 0;
   const raw: Record<string, number> = {
     industrial_plume: 0.15 + 0.35 * sharp * (indIn ? 1 : 0.5) + 0.3 * (indIn ? 1 : 0) + 0.1 * intensity,
     household_burning: 0.15 + 0.35 * (1 - sharp) * eveMorn + 0.15 * cold + 0.2 * (resIn ? 1 : 0),
     traffic: 0.1 + 0.35 * rush + 0.2 * (roadIn ? 1 : 0) + 0.15 * (1 - sharp),
-    open_burning: (0.1 + 0.25 * sharp * (indIn ? 0.4 : 1) + 0.2 * (wasteIn ? 1 : 0) + 0.15 * (rh < 50 ? 1 : 0)) * (raining ? 0.7 : 1),
+    open_burning: (0.1 + 0.25 * sharp * (indIn ? 0.4 : 1) + 0.2 * (wasteIn ? 1 : 0) + 0.15 * (rh != null && rh < 50 ? 1 : 0)) * (raining ? 0.7 : 1),
   };
   const sum = Object.values(raw).reduce((a, b) => a + b, 0);
   const scores: Record<string, number> = {};
@@ -144,27 +146,28 @@ export function fuse(p: {
         id: c.id, name: c.name, kind: c.kind, lat: c.lat, lon: c.lon,
         bearing_deg: c.bearing_deg, distance_km: c.distance_km,
         score: Math.round(score * 100) / 100,
-        eta_min: Math.round(((c.distance_km * 1000) / Math.max(0.5, ws)) / 60),
+        eta_min: ws == null ? null : Math.round(((c.distance_km * 1000) / Math.max(0.5, ws)) / 60),
         illustrative: c.illustrative,
       };
     })
     .sort((a, b) => b.score - a.score)
     .slice(0, 3);
 
-  // simulated pollutant concentrations driven by the REAL gas rise, blended by source-type scores
-  const rhFactor = 1 + Math.max(0, rh - 70) / 100; // humid air makes optical/gas sensors over-read
-  const pollutants: Record<string, { value: number; unit: string; simulated: true }> = {};
-  for (const k of Object.keys(BACKGROUND)) {
-    let mix = 0;
-    for (const t of Object.keys(scores)) mix += scores[t] * PROFILE[t][k];
-    let v = BACKGROUND[k] + (surge ? intensity : intensity * 0.3) * PEAK[k] * mix;
-    if (k === "pm25" || k === "pm10") v = (v / rhFactor) * (raining ? 0.75 : 1); // rain washes particles out of the air
-    pollutants[k] = { value: Math.round(v * 10) / 10, unit: UNIT[k], simulated: true };
+  const rhFactor = rh == null ? 1 : 1 + Math.max(0, rh - 70) / 100;
+  const pollutants: Record<string, { value: number; unit: string; simulated: true }> | undefined = simulated ? {} : undefined;
+  if (pollutants) {
+    for (const k of Object.keys(BACKGROUND)) {
+      let mix = 0;
+      for (const t of Object.keys(scores)) mix += scores[t] * PROFILE[t][k];
+      let v = BACKGROUND[k] + (surge ? intensity : intensity * 0.3) * PEAK[k] * mix;
+      if (k === "pm25" || k === "pm10") v = (v / rhFactor) * (raining ? 0.75 : 1);
+      pollutants[k] = { value: Math.round(v * 10) / 10, unit: UNIT[k], simulated: true };
+    }
   }
 
   const severity = SEVERITY[sevRank];
   return {
-    simulated: true,
+    simulated,
     method: "rule-based fusion v1",
     surge, severity, severity_rank: sevRank,
     intensity: Math.round(intensity * 1000) / 1000,
@@ -172,20 +175,24 @@ export function fuse(p: {
     slope_per_s: Math.round(slope * 10) / 10, sharpness: Math.round(sharp * 100) / 100,
     humidity_factor: Math.round(rhFactor * 100) / 100,
     wind: {
-      from_deg: Math.round(windFrom), to_deg: Math.round(windTo),
+      from_deg: Number(windFrom.toFixed(1)), to_deg: Number(windTo.toFixed(1)),
       compass_from: compass(windFrom), compass_to: compass(windTo),
       steadiness: Math.round(steady * 100) / 100, sector_halfwidth_deg: halfWidth,
-      speed_ms: Math.round(ws * 10) / 10, speed_assumed: wsWeather === null,
-      speed_source: wsWeather === null ? "assumed default" : "open-meteo",
-      dir_source: windDirSource === "weather" && weather ? "open-meteo" : "demo vane",
+      speed_ms: ws == null ? null : Math.round(ws * 10) / 10, speed_assumed: simulated && wsWeather === null,
+      speed_source: wsWeather === null ? (simulated ? "simulated default" : "unavailable") : "open-meteo",
+      dir_source: "device potentiometer",
     },
     weather: weather ? {
       ...weather,
-      vane_vs_weather_diff_deg: Number.isFinite(Number(weather.wind_dir_deg)) ? Math.round(angDiff(windFrom, Number(weather.wind_dir_deg))) : null,
+      vane_vs_weather_diff_deg: weather.wind_dir_deg != null && Number.isFinite(Number(weather.wind_dir_deg))
+        ? Math.round(angDiff(windFrom, Number(weather.wind_dir_deg)))
+        : null,
       raining,
     } : null,
     source_type: sourceType, source_label: SOURCE_LABEL[sourceType],
     confidence: Math.round(confidence * 100) / 100, scores,
-    candidates, pollutants, guidance: GUIDANCE[severity],
+    candidates,
+    ...(pollutants ? { pollutants } : {}),
+    guidance: GUIDANCE[severity],
   };
 }

@@ -37,26 +37,27 @@ The Leaflet map uses OpenStreetMap tiles with attribution displayed on the map; 
 
 ### Dashboard modes
 
-- **Live:** Supabase Realtime updates the dashboard, with four-second polling as a fallback.
-- **Simulator:** choose `?sim=1` or use the Simulator button. Simulated readings run locally through the same fusion engine and are never written to Supabase.
+- **Live (default):** the dashboard uses ESP32 readings from Supabase Realtime and refreshes the latest values every two seconds.
+- **Simulator:** click **Run scenario** and then **Start scenario**. Simulated readings stay in the browser and are never written to Supabase. A URL parameter cannot start the simulator.
 - **Demo:** choose `?demo=1` to show the local demo checklist and rehearsal table.
 - **Event report:** select Report on an event to open its printable report at `/report/[eventId]`.
 
-The dashboard includes station overview, plume map, trends, events and alerts, a searchable source registry, device status, event reports, a prototype guide, and connection settings. CSV exports use the readings, events, or alert records currently loaded by the dashboard. The AQI and pollutant values are explicitly indicative estimates, not official AQI or direct pollutant measurements.
+The dashboard includes station overview, plume map, trends, events and alerts, a searchable source registry, device status, event reports, a prototype guide, and connection settings. Live mode shows the ESP32's raw MQ response and baseline, potentiometer ADC and compass direction, DHT readings, and Wi-Fi signal; event and map analysis uses the device direction. Wind speed and local weather are identified separately as Open-Meteo data. This hardware does not measure individual pollutant concentrations or AQI, so live mode does not display invented values. CSV exports use the readings, events, or alert records currently loaded by the dashboard.
 
-Weather is loaded from Open-Meteo by the server route at `/api/weather` when no weather snapshot is present in the sensor fusion record.
+Weather is loaded from Open-Meteo by the server route at `/api/weather` when no weather snapshot is present in the sensor fusion record. It never replaces the direction received from the device potentiometer.
 
 ## Backend and device
 
-The Supabase SQL schema, weather migration, ingest function source, and demo playbook are included as supplied project files. Backend setup and firmware guidance are in [README (1).md](./README%20(1).md) and [DEMO_PLAYBOOK.md](./DEMO_PLAYBOOK.md). Apply the SQL and deploy the ingest function separately; the dashboard does not run migrations or deploy backend code.
+The Supabase SQL schema, weather migration, ingest function source, demo playbook, and updated ESP32 sketch are included. Backend setup and firmware guidance are in [README (1).md](./README%20(1).md) and [DEMO_PLAYBOOK.md](./DEMO_PLAYBOOK.md). Apply the SQL and deploy the ingest function separately; the dashboard does not run migrations or deploy backend code. The sketch is in [firmware/SasolSniffNode](./firmware/SasolSniffNode); copy `secrets.example.h` to the ignored `secrets.h` and add your private Wi-Fi and device credentials locally.
 
 ## Prototype limitations
 
 - The low-cost gas sensor is a response proxy and does not identify a specific chemical.
-- Pollutant values displayed by the fusion model are simulated from the sensor rise.
+- The MQ sensor reports a raw response proxy; it does not identify a gas or measure PM2.5, PM10, NO₂, SO₂, H₂S, CO or VOC. The local simulator may show clearly labelled fictional estimates only after it is started.
 - Candidate source locations are illustrative until replaced with verified facility data.
 - Source classification and wind-cone candidates are estimates for investigation, not attribution.
 - The prototype complements official monitoring stations; it does not replace calibrated equipment.
+- Never use a flame, lighter, butane release, smoke or aerosol near the sensor. Use only a manufacturer-approved, supervised calibration procedure.
 
 ## Validation
 

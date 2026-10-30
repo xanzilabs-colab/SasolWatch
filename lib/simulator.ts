@@ -71,6 +71,7 @@ export function createSimulatorReading(
     node,
     sources,
     weather,
+    simulated: true,
   }) as Fusion;
   const id = `sim-${tick}`;
   return {

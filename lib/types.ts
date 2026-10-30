@@ -47,7 +47,7 @@ export interface Candidate {
   bearing_deg: number;
   distance_km: number;
   score: number;
-  eta_min: number;
+  eta_min: number | null;
   illustrative: boolean;
 }
 
@@ -76,7 +76,7 @@ export interface Fusion {
     compass_to: string;
     steadiness: number;
     sector_halfwidth_deg: number;
-    speed_ms: number;
+    speed_ms: number | null;
     speed_assumed: boolean;
     speed_source?: string;
     dir_source: string;
@@ -87,7 +87,7 @@ export interface Fusion {
   confidence: number;
   scores: Record<SourceType, number>;
   candidates: Candidate[];
-  pollutants: Record<"pm25" | "pm10" | "no2" | "so2" | "h2s" | "co" | "voc", Pollutant>;
+  pollutants?: Record<"pm25" | "pm10" | "no2" | "so2" | "h2s" | "co" | "voc", Pollutant>;
   guidance: string;
 }
 
