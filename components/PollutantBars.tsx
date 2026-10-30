@@ -19,7 +19,7 @@ export function PollutantBars({ fusion, simulated }: { fusion: Fusion | null; si
           const tone = fill > 70 ? "pollutant-hot" : fill > 38 ? "pollutant-warm" : "pollutant-cool";
           return (
             <div className="pollutant-row" key={key}>
-              <div className="pollutant-line"><span>{label}</span><b>{amount.toLocaleString(undefined, { maximumFractionDigits: 1 })}<small> {item?.unit ?? ""}</small></b></div>
+              <div className="pollutant-line"><span>{label}</span><b>{item ? amount.toLocaleString(undefined, { maximumFractionDigits: 1 }) : "—"}<small> {item?.unit ?? ""}</small></b></div>
               <div className="pollutant-track"><span className={tone} style={{ width: `${fill}%` }} /></div>
             </div>
           );

@@ -111,8 +111,8 @@ export default function PlumeMap({
       <div className="map-frame">
         <MapContainer center={[lat, lon]} zoom={13} zoomControl={false} scrollWheelZoom className="leaflet-map">
           <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>'
-            url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
           <FitMap node={node} fusion={fusion} active={surge} />
           <Marker position={[lat, lon]} icon={nodeIcon}>
@@ -162,6 +162,11 @@ export default function PlumeMap({
           <span><MapPin size={13} /> {surge ? `Origin sector ${fusion?.wind.compass_from} ±${fusion?.wind.sector_halfwidth_deg}°` : "Monitoring area"}</span>
           {surge && fusion?.wind && <span>PLUME → {fusion.wind.compass_to} · {fusion.wind.speed_ms.toFixed(1)} m/s</span>}
         </div>
+        {sources.length === 0 && (
+          <div className="map-data-notice">
+            No source locations loaded. Run <code>schema.sql</code> in Supabase to add the illustrative demo points.
+          </div>
+        )}
         {simulator && <div className="sim-watermark" aria-hidden="true">SIMULATED — NOT FROM DEVICE</div>}
       </div>
       <div className="map-legend"><span><i className="legend-node" /> Node</span><span><i className="legend-source" /> Source position</span><span><i className="legend-cone" /> Upwind cone</span><small>Source positions are illustrative.</small></div>

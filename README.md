@@ -5,6 +5,7 @@ SasolSniff is an air-quality early-warning prototype for monitoring changes in s
 ## Dashboard
 
 The Next.js dashboard opens directly without a login. It reads node, source, reading, event, alert, and cached-weather data from Supabase using the **public anon key**. Browser code is read-only and never queries `alert_recipients`.
+The Leaflet map uses OpenStreetMap tiles with attribution displayed on the map; no CARTO API key is required.
 
 ### Run locally
 

@@ -4,12 +4,12 @@ import type { Fusion } from "@/lib/types";
 
 const icons = { industrial: Factory, power: Zap, mine: Pickaxe, waste_treatment: Factory, residential: Home, road: Route };
 
-export function CandidateList({ fusion, active, simulated }: { fusion: Fusion | null; active: boolean; simulated: boolean }) {
+export function CandidateList({ fusion, active, simulated, sourceCount }: { fusion: Fusion | null; active: boolean; simulated: boolean; sourceCount: number }) {
   const candidates = active ? (fusion?.candidates ?? []) : [];
   return (
     <Panel title="Candidate sources" eyebrow="UPWIND SECTOR" simulated={simulated || active}>
       <p className="panel-caption">Illustrative source positions.</p>
-      {!active ? <div className="empty-state">Candidates appear during an active surge.</div> : candidates.length === 0 ? (
+      {!sourceCount ? <div className="empty-state">No source locations loaded. Run schema.sql in Supabase to add illustrative demo points.</div> : !active ? <div className="empty-state">Candidates appear during an active surge.</div> : candidates.length === 0 ? (
         <div className="empty-state">No illustrative sources in the current upwind cone.</div>
       ) : (
         <div className="candidate-list">

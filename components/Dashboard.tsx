@@ -217,7 +217,7 @@ export function Dashboard({
         </section>
         <aside className="dashboard-column analysis-column">
           <ClassifierPanel fusion={fusion} active={Boolean(fusion?.surge || activeEvent)} simulated={simulatorMode} readingTime={latest?.ts} />
-          <CandidateList fusion={fusion} active={Boolean(fusion?.surge || activeEvent)} simulated={simulatorMode} />
+          <CandidateList fusion={fusion} active={Boolean(fusion?.surge || activeEvent)} simulated={simulatorMode} sourceCount={sources.length} />
           <WeatherPanel fusion={fusion} node={node} simulated={simulatorMode} />
           <AlertsFeed alerts={alerts} simulated={simulatorMode} />
           <EventsList events={events} simulated={simulatorMode} now={now} />
