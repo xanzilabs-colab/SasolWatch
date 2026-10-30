@@ -62,12 +62,18 @@ export default function PlumeMap({
   fusion: Fusion | null;
   simulator: boolean;
 }) {
+  const [mapReady, setMapReady] = useState(false);
   const [motionEnabled, setMotionEnabled] = useState(false);
   const [particleTick, setParticleTick] = useState(0);
   const lat = node?.lat ?? -26.8167;
   const lon = node?.lon ?? 27.8167;
   const surge = Boolean(fusion?.surge);
   const color = severityColor[fusion?.severity ?? "none"];
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => setMapReady(true), 0);
+    return () => window.clearTimeout(timer);
+  }, []);
 
   useEffect(() => {
     const media = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -109,7 +115,7 @@ export default function PlumeMap({
   return (
     <Panel title="Live plume map" eyebrow="SASOLBURG · 26.82°S 27.82°E" className="map-panel" simulated={simulator}>
       <div className="map-frame">
-        <MapContainer center={[lat, lon]} zoom={13} zoomControl={false} scrollWheelZoom className="leaflet-map">
+        {mapReady ? <MapContainer center={[lat, lon]} zoom={13} zoomControl={false} scrollWheelZoom className="leaflet-map">
           <TileLayer
             attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             url="https://tile.openstreetmap.org/{z}/{x}/{y}.png"
@@ -156,7 +162,7 @@ export default function PlumeMap({
             <Marker position={destinationPoint(lat, lon, fusion.wind.from_deg, 7.7)} icon={L.divIcon({ className: "map-tip", html: `<span>ORIGIN SECTOR · ${escapeHtml(fusion.wind.compass_from)}</span>`, iconAnchor: [0, 0] })} />
           )}
           <ZoomControl position="bottomright" />
-        </MapContainer>
+        </MapContainer> : <div className="leaflet-map" />}
         <div className="map-compass" aria-hidden="true"><ArrowUpRight size={20} /><span>N</span></div>
         <div className="map-footer">
           <span><MapPin size={13} /> {surge ? `Origin sector ${fusion?.wind.compass_from} ±${fusion?.wind.sector_halfwidth_deg}°` : "Monitoring area"}</span>
@@ -164,7 +170,7 @@ export default function PlumeMap({
         </div>
         {sources.length === 0 && (
           <div className="map-data-notice">
-            No source locations loaded. Run <code>schema.sql</code> in Supabase to add the illustrative demo points.
+            No source locations loaded. Run <code>supabase/schema.sql</code> in the Supabase SQL Editor to add illustrative demo points.
           </div>
         )}
         {simulator && <div className="sim-watermark" aria-hidden="true">SIMULATED — NOT FROM DEVICE</div>}

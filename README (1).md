@@ -3,28 +3,33 @@
 ## 1. Deploy (about 10 minutes)
 
 1. In the Supabase SQL editor, run `supabase/schema.sql`.
-2. Install the CLI and link the project:
+2. Install the CLI and link the same project used by the dashboard and device:
    ```
    supabase login
-   supabase link --project-ref YOUR_PROJECT_REF
+   supabase link --project-ref bfcckzvvxqzvctvfrscd
    ```
-3. Set secrets (pick a long random `DEVICE_KEY`, the same value goes into the firmware):
+3. Generate a new `DEVICE_KEY` in PowerShell, save it to the correct project, and copy it into the firmware. Keep it private:
    ```
-   supabase secrets set DEVICE_KEY=change-me-long-random
-   supabase secrets set ALERT_DRY_RUN=true
-   supabase secrets set ZERNIO_API_KEY=sk_xxx ZERNIO_ACCOUNT_ID=xxx
-   supabase secrets set ZERNIO_TEMPLATE_NAME=sasolsniff_alert ZERNIO_TEMPLATE_LANG=en
+   $bytes = New-Object byte[] 32
+   $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+   $rng.GetBytes($bytes)
+   $key = [Convert]::ToBase64String($bytes).TrimEnd('=').Replace('+','-').Replace('/','_')
+   Write-Host "Copy this value into the firmware: $key"
+   supabase secrets set --project-ref bfcckzvvxqzvctvfrscd "DEVICE_KEY=$key"
+   supabase secrets set --project-ref bfcckzvvxqzvctvfrscd ALERT_DRY_RUN=true
+   supabase secrets set --project-ref bfcckzvvxqzvctvfrscd ZERNIO_API_KEY=YOUR_ZERNIO_API_KEY ZERNIO_ACCOUNT_ID=YOUR_ZERNIO_ACCOUNT_ID
+   supabase secrets set --project-ref bfcckzvvxqzvctvfrscd ZERNIO_TEMPLATE_NAME=sasolsniff_alert ZERNIO_TEMPLATE_LANG=en
    ```
-4. Deploy the function (no JWT check, the device key protects it):
+4. Deploy the function to the linked project (the device key protects it):
    ```
-   supabase functions deploy ingest --no-verify-jwt
+   supabase functions deploy ingest --project-ref bfcckzvvxqzvctvfrscd --no-verify-jwt
    ```
-5. Firmware settings: `INGEST_URL = https://YOUR_PROJECT_REF.supabase.co/functions/v1/ingest`, `DEVICE_KEY` = the secret above.
+5. Firmware settings: `INGEST_URL = https://bfcckzvvxqzvctvfrscd.supabase.co/functions/v1/ingest`, `DEVICE_KEY` = the secret above.
 
 Test without hardware:
 ```
-curl -X POST https://YOUR_PROJECT_REF.supabase.co/functions/v1/ingest \
-  -H "x-device-key: change-me-long-random" -H "Content-Type: application/json" \
+curl -X POST https://bfcckzvvxqzvctvfrscd.supabase.co/functions/v1/ingest \
+  -H "x-device-key: YOUR_DEVICE_KEY" -H "Content-Type: application/json" \
   -d '{"node_id":"sasolsniff-node-01","gas_raw":3200,"baseline_raw":1500,"wind_from_deg":330,"temperature_c":22,"humidity_pct":45}'
 ```
 Send it twice a few seconds apart: an event opens on the second consecutive surge reading.

@@ -9,7 +9,7 @@ export function CandidateList({ fusion, active, simulated, sourceCount }: { fusi
   return (
     <Panel title="Candidate sources" eyebrow="UPWIND SECTOR" simulated={simulated || active}>
       <p className="panel-caption">Illustrative source positions.</p>
-      {!sourceCount ? <div className="empty-state">No source locations loaded. Run schema.sql in Supabase to add illustrative demo points.</div> : !active ? <div className="empty-state">Candidates appear during an active surge.</div> : candidates.length === 0 ? (
+      {!sourceCount ? <div className="empty-state">No source locations loaded. Run supabase/schema.sql in the Supabase SQL Editor to add illustrative demo points.</div> : !active ? <div className="empty-state">Candidates appear during an active surge.</div> : candidates.length === 0 ? (
         <div className="empty-state">No illustrative sources in the current upwind cone.</div>
       ) : (
         <div className="candidate-list">

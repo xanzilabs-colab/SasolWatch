@@ -1,4 +1,4 @@
-// SasolSniff ingest edge function
+// SasolSniff ingest Edge Function (deployed from supabase/functions/ingest).
 // Receives ESP32 readings, fuses them into surge / wind / source / pollutant estimates,
 // tracks surge events and sends WhatsApp alerts through Zernio.
 //

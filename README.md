@@ -42,6 +42,8 @@ The Leaflet map uses OpenStreetMap tiles with attribution displayed on the map; 
 - **Demo:** choose `?demo=1` to show the local demo checklist and rehearsal table.
 - **Event report:** select Report on an event to open its printable report at `/report/[eventId]`.
 
+The dashboard includes station overview, plume map, trends, events and alerts, a searchable source registry, device status, event reports, a prototype guide, and connection settings. CSV exports use the readings, events, or alert records currently loaded by the dashboard. The AQI and pollutant values are explicitly indicative estimates, not official AQI or direct pollutant measurements.
+
 Weather is loaded from Open-Meteo by the server route at `/api/weather` when no weather snapshot is present in the sensor fusion record.
 
 ## Backend and device
