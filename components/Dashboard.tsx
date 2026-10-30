@@ -700,7 +700,6 @@ export function Dashboard({
             description={activeView === "overview" ? `${detail.description} · Last updated ${formatSast(latest?.received_at)}` : detail.description}
             actions={<>
               <button className="toolbar-button" onClick={exportReadings} disabled={!canExportReadings}><Download size={15} /> <span>Export readings</span></button>
-              <button className="toolbar-button toolbar-primary" onClick={toggleSimulator}><FlaskConical size={15} /> <span>{simulatorMode ? "Scenario controls" : "Run scenario"}</span></button>
             </>}
           />
           {live.error && !simulatorMode && activeView !== "overview" && activeView !== "settings" && (
