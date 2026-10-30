@@ -14,6 +14,8 @@ const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const webhookSecret = Deno.env.get("ZERNIO_WEBHOOK_SECRET") ?? "";
 const apiKey = Deno.env.get("ZERNIO_WHATSAPP_API_KEY") ?? Deno.env.get("ZERNIO_API_KEY") ?? "";
+const useSandbox = Deno.env.get("USE_SANDBOX") === "true";
+const configuredAccountId = Deno.env.get("ZERNIO_ACCOUNT_ID") ?? "";
 const db = createClient(supabaseUrl, serviceRoleKey, { auth: { persistSession: false } });
 
 const json = (body: Record<string, unknown>, status = 200) =>
@@ -116,6 +118,52 @@ async function processEvent(eventId: string) {
       const command = inboundCommand(claimed.message_text);
       const accountId = typeof payload.account_id === "string" ? payload.account_id : null;
       const conversationId = typeof message.conversationId === "string" ? message.conversationId : null;
+      if (useSandbox) {
+        const { data: sandboxConfig, error: sandboxConfigError } = await db
+          .from("zernio_runtime_config")
+          .select("config_value")
+          .eq("config_key", "sandbox_session")
+          .maybeSingle();
+        if (sandboxConfigError) throw new Error("Unable to load sandbox session");
+        const sandbox = sandboxConfig?.config_value as { phone?: unknown; status?: string } | null;
+        const allowedPhone = normalizeE164(sandbox?.phone);
+        if (
+          !allowedPhone ||
+          phone !== allowedPhone ||
+          !accountId ||
+          (configuredAccountId && accountId !== configuredAccountId)
+        ) {
+          await updateEvent(eventId, {
+            status: "completed",
+            message_text: null,
+            message_phone: null,
+            processing_error: "message_not_from_active_sandbox_recipient",
+            processed_at: new Date().toISOString(),
+          });
+          return;
+        }
+        const { error: sessionError } = await db.from("zernio_runtime_config").upsert({
+          config_key: "sandbox_session",
+          config_value: {
+            ...sandbox,
+            phone: allowedPhone,
+            accountId,
+            status: "active",
+            activatedAt: new Date().toISOString(),
+          },
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "config_key" });
+        if (sessionError) throw new Error("Unable to activate sandbox recipient");
+      } else if (configuredAccountId && accountId && accountId !== configuredAccountId) {
+        await updateEvent(eventId, {
+          status: "completed",
+          message_text: null,
+          message_phone: null,
+          processing_error: "message_from_unconfigured_account",
+          processed_at: new Date().toISOString(),
+        });
+        return;
+      }
       const { error: subscriberError } = await db.rpc("upsert_zernio_subscriber", {
         p_phone: phone,
         p_action: command,

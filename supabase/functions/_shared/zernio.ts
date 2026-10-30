@@ -101,6 +101,33 @@ export function insideWhatsAppWindow(lastInboundAt: string | null, now = Date.no
   return Number.isFinite(timestamp) && timestamp <= now && now - timestamp < WINDOW_MS;
 }
 
+export function whatsappDeliveryMode(lastInboundAt: string | null, now = Date.now()): "text" | "template" {
+  return insideWhatsAppWindow(lastInboundAt, now) ? "text" : "template";
+}
+
+export function normalizeSandboxPhone(phone: unknown): string | null {
+  return normalizeE164(phone);
+}
+
+export function sandboxRecipientAllowed(recipient: unknown, configuredTestPhone: unknown): boolean {
+  const phone = normalizeSandboxPhone(recipient);
+  const allowedPhone = normalizeSandboxPhone(configuredTestPhone);
+  return phone !== null && allowedPhone !== null && phone === allowedPhone;
+}
+
+export function alertTemplateConfig(
+  useSandbox: boolean,
+  config: { sandboxName?: string; sandboxLanguage?: string; productionName?: string; productionLanguage?: string },
+) {
+  return useSandbox
+    ? { name: config.sandboxName || "sandbox_start", language: config.sandboxLanguage || "en" }
+    : { name: config.productionName || "alert_notification", language: config.productionLanguage || "en_US" };
+}
+
+export function alertTemplateParams(useSandbox: boolean, message: string): string[] {
+  return useSandbox ? [] : [message];
+}
+
 async function zernioRequest(
   apiKey: string,
   path: string,
@@ -140,7 +167,8 @@ function providerMessageId(body: Record<string, unknown>): string | null {
 
 async function sendOnce(apiKey: string, delivery: Delivery, templateName: string, templateLanguage: string) {
   if (!delivery.account_id) throw new Error("subscriber has no Zernio account id");
-  if (insideWhatsAppWindow(delivery.last_inbound_at)) {
+  const useSandbox = Deno.env.get("USE_SANDBOX") === "true";
+  if (whatsappDeliveryMode(delivery.last_inbound_at) === "text") {
     if (!delivery.zernio_conversation_id) throw new Error("subscriber has no Zernio conversation id");
     const conversationId = encodeURIComponent(delivery.zernio_conversation_id);
     return await zernioRequest(
@@ -159,7 +187,7 @@ async function sendOnce(apiKey: string, delivery: Delivery, templateName: string
       participantId: delivery.phone.replace(/\D/g, ""),
       templateName,
       templateLanguage,
-      templateParams: [delivery.message],
+      templateParams: alertTemplateParams(useSandbox, delivery.message),
     },
     delivery.delivery_key,
   );
@@ -177,13 +205,45 @@ export async function queueSubscriberAlert(
     dryRun: boolean;
   },
 ): Promise<Delivery[]> {
-  const { data: subscribers, error: subscribersError } = await db
+  const useSandbox = Deno.env.get("USE_SANDBOX") === "true";
+  const configuredAccountId = Deno.env.get("ZERNIO_ACCOUNT_ID") ?? "";
+  let sandboxPhone: string | null = null;
+  if (useSandbox) {
+    const { data: sandboxConfig, error: sandboxConfigError } = await db
+      .from("zernio_runtime_config")
+      .select("config_value")
+      .eq("config_key", "sandbox_session")
+      .maybeSingle();
+    if (sandboxConfigError) throw new Error("Could not load sandbox recipient configuration");
+    const config = sandboxConfig?.config_value as { phone?: unknown; status?: unknown } | null;
+    sandboxPhone = normalizeSandboxPhone(config?.phone);
+    if (!sandboxPhone) {
+      console.warn("WhatsApp sandbox delivery skipped: activate one test phone first");
+      return [];
+    }
+    if (config?.status !== "active" && !options.dryRun) {
+      console.warn("WhatsApp sandbox delivery skipped: the test phone session is not active");
+      return [];
+    }
+  } else if (!configuredAccountId && !options.dryRun) {
+    console.warn("WhatsApp delivery skipped: ZERNIO_ACCOUNT_ID is not configured");
+    return [];
+  }
+
+  let subscriberQuery = db
     .from("subscribers")
     .select("id,phone,status,last_inbound_at,zernio_conversation_id,account_id")
     .eq("status", "active");
+  if (sandboxPhone) subscriberQuery = subscriberQuery.eq("phone", sandboxPhone);
+  const { data: subscribers, error: subscribersError } = await subscriberQuery;
   if (subscribersError) throw new Error("Could not load active WhatsApp subscribers");
 
-  const rows = ((subscribers ?? []) as Subscriber[]).map((subscriber) => ({
+  const allowedSubscribers = ((subscribers ?? []) as Subscriber[]).filter((subscriber) =>
+    sandboxPhone
+      ? sandboxRecipientAllowed(subscriber.phone, sandboxPhone)
+      : !configuredAccountId || subscriber.account_id === configuredAccountId
+  );
+  const rows = allowedSubscribers.map((subscriber) => ({
     delivery_key: options.eventId != null
       ? `event-${options.eventId}-severity-${options.severityRank ?? 0}-subscriber-${subscriber.id}`
       : `manual-${options.batchId ?? crypto.randomUUID()}-subscriber-${subscriber.id}`,
@@ -220,7 +280,7 @@ export async function queueSubscriberAlert(
       phone: subscriber.phone,
       last_inbound_at: subscriber.last_inbound_at,
       zernio_conversation_id: subscriber.zernio_conversation_id,
-      account_id: subscriber.account_id,
+      account_id: Deno.env.get("ZERNIO_ACCOUNT_ID") ?? subscriber.account_id ?? null,
       message,
     }];
   });
@@ -228,13 +288,33 @@ export async function queueSubscriberAlert(
 
 export async function sendQueuedSubscriberAlerts(db: any, deliveries: Delivery[]): Promise<void> {
   const apiKey = Deno.env.get("ZERNIO_WHATSAPP_API_KEY") ?? Deno.env.get("ZERNIO_API_KEY") ?? "";
-  const templateName = Deno.env.get("ZERNIO_ALERT_TEMPLATE_NAME") ?? "alert_notification";
-  const templateLanguage = Deno.env.get("ZERNIO_ALERT_TEMPLATE_LANGUAGE") ?? "en_US";
+  const useSandbox = Deno.env.get("USE_SANDBOX") === "true";
+  let sandboxTemplateName: string | undefined;
+  let sandboxTemplateLanguage: string | undefined;
+  if (useSandbox) {
+    const { data: config, error } = await db.from("zernio_runtime_config")
+      .select("config_value")
+      .eq("config_key", "sandbox_session")
+      .maybeSingle();
+    if (error) throw new Error("Could not load the discovered sandbox template");
+    const template = (config?.config_value as { template?: { name?: unknown; language?: unknown } } | null)?.template;
+    sandboxTemplateName = typeof template?.name === "string" ? template.name : undefined;
+    sandboxTemplateLanguage = typeof template?.language === "string" ? template.language : undefined;
+    if (!sandboxTemplateName || !sandboxTemplateLanguage) {
+      throw new Error("Sandbox template metadata is missing; discover and activate the sandbox again");
+    }
+  }
+  const template = alertTemplateConfig(useSandbox, {
+    sandboxName: sandboxTemplateName ?? Deno.env.get("ZERNIO_SANDBOX_TEMPLATE_NAME") ?? undefined,
+    sandboxLanguage: sandboxTemplateLanguage ?? Deno.env.get("ZERNIO_SANDBOX_TEMPLATE_LANGUAGE") ?? undefined,
+    productionName: Deno.env.get("ZERNIO_ALERT_TEMPLATE_NAME") ?? undefined,
+    productionLanguage: Deno.env.get("ZERNIO_ALERT_TEMPLATE_LANGUAGE") ?? undefined,
+  });
   for (const delivery of deliveries) {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
         if (!apiKey) throw new Error("Zernio API key is not configured");
-        const result = await sendOnce(apiKey, delivery, templateName, templateLanguage);
+        const result = await sendOnce(apiKey, delivery, template.name, template.language);
         const { error: deliveryError } = await db.from("subscriber_alert_deliveries").update({
           status: "sent",
           attempts: attempt,

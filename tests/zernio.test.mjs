@@ -2,13 +2,17 @@ import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
 import test from "node:test";
 import {
+  alertTemplateConfig,
+  alertTemplateParams,
   duplicateDisposition,
   eventIdentity,
   inboundCommand,
   insideWhatsAppWindow,
   isInboundDirection,
   normalizeE164,
+  sandboxRecipientAllowed,
   verifyZernioSignature,
+  whatsappDeliveryMode,
 } from "../supabase/functions/_shared/zernio.ts";
 
 test("validates the raw-body HMAC signature", async () => {
@@ -48,6 +52,9 @@ test("selects free-form messaging only inside WhatsApp's 24-hour window", () => 
   assert.equal(insideWhatsAppWindow("2026-10-29T12:00:00.000Z", now), false);
   assert.equal(insideWhatsAppWindow("2026-10-30T12:00:01.000Z", now), false);
   assert.equal(insideWhatsAppWindow(null, now), false);
+  assert.equal(whatsappDeliveryMode("2026-10-29T12:00:01.000Z", now), "text");
+  assert.equal(whatsappDeliveryMode("2026-10-29T12:00:00.000Z", now), "template");
+  assert.equal(whatsappDeliveryMode(null, now), "template");
 });
 
 test("normalizes WhatsApp senders and accepts inbound directions", () => {
@@ -57,4 +64,17 @@ test("normalizes WhatsApp senders and accepts inbound directions", () => {
   assert.equal(isInboundDirection("incoming"), true);
   assert.equal(isInboundDirection("inbound"), true);
   assert.equal(isInboundDirection("outgoing"), false);
+});
+
+test("sandbox delivery is restricted to its one activated phone", () => {
+  assert.equal(sandboxRecipientAllowed("+27730884239", "27730884239"), true);
+  assert.equal(sandboxRecipientAllowed("+27730884239", "+14155550123"), false);
+  assert.equal(sandboxRecipientAllowed("invalid", "+27730884239"), false);
+});
+
+test("sandbox uses its locked template without alert variables", () => {
+  assert.deepEqual(alertTemplateConfig(true, {}), { name: "sandbox_start", language: "en" });
+  assert.deepEqual(alertTemplateConfig(false, {}), { name: "alert_notification", language: "en_US" });
+  assert.deepEqual(alertTemplateParams(true, "Private alert detail"), []);
+  assert.deepEqual(alertTemplateParams(false, "Alert detail"), ["Alert detail"]);
 });
