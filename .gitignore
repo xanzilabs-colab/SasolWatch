@@ -1,0 +1,11 @@
+node_modules
+.next
+out
+build
+coverage
+.env.local
+.env*.local
+.vercel
+*.tsbuildinfo
+next-env.d.ts
+sasolsniff-scaffold
