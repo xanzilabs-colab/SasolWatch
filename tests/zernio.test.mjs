@@ -14,7 +14,62 @@ import {
   verifyZernioSignature,
   whatsappDeliveryMode,
 } from "../supabase/functions/_shared/zernio.ts";
+import { buildPlainAirAlert, translateAlertToSesotho } from "../supabase/functions/_shared/alert-language.ts";
 import { evaluateSurge, SURGE_MIN_STREAK, SURGE_SCORE_THRESHOLD } from "../lib/surge-score.ts";
+
+test("builds a plain-language alert without sensor jargon", () => {
+  const message = buildPlainAirAlert("moderate", "NE");
+  assert.match(message, /Air warning for your area/);
+  assert.match(message, /spend less time outside/);
+  assert.match(message, /wind is coming from the northeast/i);
+  assert.match(message, /cannot tell us exactly what is in the air/);
+  assert.doesNotMatch(message, /surge score|ADC|MQ|rule score|pollutant concentration/i);
+  assert.match(buildPlainAirAlert("severe", "S"), /follow advice from local officials/);
+});
+
+test("translates only the plain alert with the configured Gemini key", async () => {
+  const originalFetch = globalThis.fetch;
+  let request;
+  globalThis.fetch = async (input, init) => {
+    request = { input: String(input), ...init };
+    return new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: "Temoso ya moya. Lula ka tlung." }] } }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const translation = await translateAlertToSesotho("Air warning. Stay indoors.", "test-key");
+    assert.equal(translation, "Temoso ya moya. Lula ka tlung.");
+    assert.match(request.input, /models\/gemini-3\.1-flash-lite:generateContent$/);
+    assert.equal(request.headers["x-goog-api-key"], "test-key");
+    assert.doesNotMatch(request.input, /test-key/);
+    assert.match(JSON.parse(request.body).systemInstruction.parts[0].text, /Sesotho/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("fails explicitly when Gemini does not return a translation", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ candidates: [] }), { status: 200 });
+  try {
+    await assert.rejects(translateAlertToSesotho("Air warning.", "test-key"), /empty or oversized translation/);
+    await assert.rejects(translateAlertToSesotho("Air warning.", ""), /GEMI_API_KEY is not configured/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("rejects a truncated Gemini translation", async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({
+    candidates: [{ finishReason: "MAX_TOKENS", content: { parts: [{ text: "Temoso..." }] } }],
+  }), { status: 200 });
+  try {
+    await assert.rejects(translateAlertToSesotho("Air warning.", "test-key"), /translation was truncated/);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
 
 test("validates the raw-body HMAC signature", async () => {
   const body = '{"id":"evt-1","event":"message.received"}';

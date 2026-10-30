@@ -50,6 +50,8 @@ Weather is loaded from OpenWeather by the server route at `/api/weather` when no
 
 The Supabase SQL schema, weather migration, ingest function source, demo playbook, and updated ESP32 sketch are included. Backend setup and firmware guidance are in [README (1).md](./README%20(1).md) and [DEMO_PLAYBOOK.md](./DEMO_PLAYBOOK.md). Apply the SQL and deploy the ingest function separately; the dashboard does not run migrations or deploy backend code. The sketch is in [firmware/SasolSniffNode](./firmware/SasolSniffNode); copy `secrets.example.h` to the ignored `secrets.h` and add your private Wi-Fi and device credentials locally.
 
+Automatic WhatsApp alerts keep the full sensor analysis in the dashboard and send a separate plain-language precaution. Before a live alert is queued, the Supabase Edge Function uses the server-side `GEMI_API_KEY` secret to translate that message into Sesotho. Configure it with `supabase secrets set GEMI_API_KEY=your-key --project-ref your-project-ref`; never add it to a `NEXT_PUBLIC_` variable. If translation is unavailable, the alert falls back to the same plain-language message in English.
+
 ## Prototype limitations
 
 - The low-cost gas sensor is a response proxy and does not identify a specific chemical.

@@ -8,6 +8,7 @@
 
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { queueSubscriberAlert, sendQueuedSubscriberAlerts } from "../_shared/zernio.ts";
+import { buildPlainAirAlert, translateAlertToSesotho } from "../_shared/alert-language.ts";
 import { evaluateSurge, SURGE_SCORE_THRESHOLD } from "../../../lib/surge-score.ts";
 
 const SUPABASE_URL = Deno.env.get("SUPABASE_URL")!;
@@ -17,6 +18,7 @@ const ALERT_DRY_RUN = (Deno.env.get("ALERT_DRY_RUN") ?? "true") !== "false";
 const ALERT_MIN_SEVERITY = Deno.env.get("ALERT_MIN_SEVERITY") ?? "moderate";
 const ALERT_MIN_SURGE_SCORE = Number(Deno.env.get("ALERT_MIN_SURGE_SCORE") ?? "65");
 const ALERT_COOLDOWN_MIN = Number(Deno.env.get("ALERT_COOLDOWN_MIN") ?? "10");
+const GEMI_API_KEY = Deno.env.get("GEMI_API_KEY") ?? "";
 const OPENWEATHER_API_KEY = Deno.env.get("OPENWEATHER_API_KEY") ?? Deno.env.get("OPEN_METEO_API_KEY") ?? "";
 const WEATHER_TTL_MIN = Number(Deno.env.get("WEATHER_TTL_MIN") ?? "10");
 if (!Number.isFinite(ALERT_MIN_SURGE_SCORE) || ALERT_MIN_SURGE_SCORE < SURGE_SCORE_THRESHOLD || ALERT_MIN_SURGE_SCORE > 100) {
@@ -315,6 +317,7 @@ async function dispatchAlerts(ev: any, fusion: any, node: any, testMode: boolean
     ? `Local weather: wind ${fusion.weather.wind_speed_ms ?? "unavailable"} m/s, precipitation ${fusion.weather.precipitation_mm ?? "unavailable"} mm.`
     : "Local weather is unavailable.";
   const preview = `SasolSniff ${params[1]} sensor alert for ${params[0]}. Surge score ${fusion.surge_score}/100 (${fusion.surge_streak} consecutive readings); raw response +${fusion.rise} ADC over a ${fusion.threshold} ADC trigger threshold. Wind from ${params[3]} (${fusion.wind.from_deg}°), flow toward ${fusion.wind.compass_to} (${fusion.wind.to_deg}°). ${weatherDetail} Source hypothesis: ${params[2]} (${Math.round(fusion.confidence * 100)}% rule score; unverified). ${params[4]} MQ raw response is not a calibrated pollutant concentration.`;
+  const plainMessage = buildPlainAirAlert(fusion.severity, fusion.wind.compass_from);
 
   const { data: subscribers, error: subscribersError } = await sb.from("subscribers")
     .select("id,phone").eq("status", "active");
@@ -352,7 +355,22 @@ async function dispatchAlerts(ev: any, fusion: any, node: any, testMode: boolean
     if (alert.subscriber_id != null) alertIdBySubscriber[alert.subscriber_id] = alert.id;
   }
   try {
-    const deliveries = await queueSubscriberAlert(sb, preview, {
+    let whatsappMessage = plainMessage;
+    if (!dryRun && (subscribers ?? []).length > 0) {
+      if (!GEMI_API_KEY) {
+        console.error("Sesotho WhatsApp translation unavailable: GEMI_API_KEY is not configured; using plain English.");
+      } else {
+        try {
+          whatsappMessage = await translateAlertToSesotho(plainMessage, GEMI_API_KEY);
+        } catch (error) {
+          console.error(
+            "Sesotho WhatsApp translation failed; using plain English.",
+            error instanceof Error ? error.message : "Unknown translation error",
+          );
+        }
+      }
+    }
+    const deliveries = await queueSubscriberAlert(sb, whatsappMessage, {
       eventId: ev.id,
       severityRank: fusion.severity_rank,
       alertIdBySubscriber,

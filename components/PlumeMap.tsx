@@ -200,14 +200,20 @@ export default function PlumeMap({
           <span><MapPin size={13} /> {from == null ? "Waiting for device wind-potentiometer reading" : `${simulator ? "SIMULATOR" : "DEVICE VANE"} · FROM ${compassDirection(from)} ${from.toFixed(1)}° · ADC ${windRaw ?? "—"} / 4095${readingTimeLabel ? ` · SAMPLE ${readingTimeLabel} SAST` : ""}`}</span>
           <span>{surge && fusion?.wind ? `UPWIND SECTOR ±${fusion.wind.sector_halfwidth_deg}° · ` : ""}{to == null ? "Wind-flow direction unavailable" : `FLOW → ${compassDirection(to)} ${to.toFixed(1)}° · DEVICE-VANE DIRECTION CORRIDOR (NOT A DISPERSION MODEL)`}{surge && fusion?.wind ? ` · ${fusion.wind.speed_ms == null ? "weather speed unavailable" : `${fusion.wind.speed_ms.toFixed(1)} m/s weather speed`}` : ""}</span>
         </div>
-        {!node && <div className="map-data-notice">No registered node coordinates are available. Add the sensor&apos;s real location in Supabase; placeholder coordinates are not shown.</div>}
-        {node && sources.length === 0 && (
-          <div className="map-data-notice">
-            No verified source coordinates are registered. The map shows the device&apos;s measured wind direction only; illustrative seed locations are hidden from live analysis.
-          </div>
-        )}
         {simulator && <div className="sim-watermark" aria-hidden="true">SIMULATED — NOT FROM DEVICE</div>}
       </div>
+      {!node && (
+        <div className="map-data-notice" role="status">
+          <MapPin size={15} aria-hidden="true" />
+          <div><strong>Node location unavailable</strong><span>No verified sensor coordinates are set, so the map cannot show its real position.</span></div>
+        </div>
+      )}
+      {node && sources.length === 0 && (
+        <div className="map-data-notice" role="status">
+          <MapPin size={15} aria-hidden="true" />
+          <div><strong>Source locations not verified</strong><span>No verified source coordinates are registered. The map shows the measured wind direction only; unverified source markers are hidden.</span></div>
+        </div>
+      )}
       <div className="map-legend">
         <span><i className="legend-node" /> Node</span>
         <span><i className="legend-wind" /> Vane flow</span>
