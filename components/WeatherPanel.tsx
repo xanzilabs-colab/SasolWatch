@@ -8,7 +8,7 @@ import { compassDirection } from "@/lib/geo";
 
 export function WeatherPanel({ fusion, node, simulated, deviceWindFrom }: { fusion: Fusion | null; node: NodeRow | null; simulated: boolean; deviceWindFrom?: number | null }) {
   const [fallback, setFallback] = useState<WeatherData | null>(null);
-  const [failed, setFailed] = useState(false);
+  const [failedMessage, setFailedMessage] = useState<string | null>(null);
   const lat = node?.lat;
   const lon = node?.lon;
   useEffect(() => {
@@ -16,12 +16,13 @@ export function WeatherPanel({ fusion, node, simulated, deviceWindFrom }: { fusi
     const controller = new AbortController();
     fetch(`/api/weather?lat=${lat}&lon=${lon}`, { signal: controller.signal })
       .then(async (response) => {
-        if (!response.ok) throw new Error("Weather unavailable");
-        return response.json() as Promise<WeatherData>;
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.message ?? "Weather unavailable");
+        return result as WeatherData;
       })
       .then(setFallback)
       .catch((error: unknown) => {
-        if (error instanceof Error && error.name !== "AbortError") setFailed(true);
+        if (error instanceof Error && error.name !== "AbortError") setFailedMessage(error.message);
       });
     return () => controller.abort();
   }, [fusion?.weather, lat, lon, simulated]);
@@ -30,9 +31,9 @@ export function WeatherPanel({ fusion, node, simulated, deviceWindFrom }: { fusi
   const vane = deviceWindFrom ?? fusion?.wind.from_deg;
   const realWind = weather?.wind_dir_deg;
   return (
-    <Panel title="Local weather" eyebrow="OPEN-METEO" simulated={simulated}>
+    <Panel title="Local weather" eyebrow="OPENWEATHER" simulated={simulated}>
       {!weather ? (
-        <div className="empty-state">{failed ? "Weather service is temporarily unavailable." : "Fetching current local conditions…"}</div>
+        <div className="empty-state">{failedMessage ?? "Fetching current local conditions…"}</div>
       ) : (
         <>
           <div className="weather-compass-row">
@@ -45,7 +46,7 @@ export function WeatherPanel({ fusion, node, simulated, deviceWindFrom }: { fusi
             <div className="weather-wind-value"><small>WIND SPEED</small><strong>{weather.wind_speed_ms?.toFixed(1) ?? "—"}<i> m/s</i></strong><span>gusts {weather.wind_gust_ms?.toFixed(1) ?? "—"} m/s</span></div>
           </div>
           <p className="compass-caption">Device potentiometer vs local weather-station wind</p>
-          <div className="weather-legend"><span><i className="legend-vane" /> Device: {vane == null ? "—" : `${compassDirection(vane)} ${vane.toFixed(1)}°`}</span><span><i className="legend-real" /> Open-Meteo</span>
+          <div className="weather-legend"><span><i className="legend-vane" /> Device: {vane == null ? "—" : `${compassDirection(vane)} ${vane.toFixed(1)}°`}</span><span><i className="legend-real" /> {weather.source === "openweather" ? "OpenWeather" : weather.source ?? "Weather provider"}</span>
             {weather.vane_vs_weather_diff_deg != null && <b>{weather.vane_vs_weather_diff_deg}° difference</b>}
           </div>
           <div className="weather-grid">
@@ -57,7 +58,7 @@ export function WeatherPanel({ fusion, node, simulated, deviceWindFrom }: { fusi
           {weather.stale && <small className="stale-note">Showing last cached observation.</small>}
         </>
       )}
-      <p className="weather-footer">Weather: Open-Meteo (free, non-commercial tier)</p>
+      <p className="weather-footer">Weather data provided by OpenWeather. Device wind direction remains the potentiometer reading.</p>
     </Panel>
   );
 }

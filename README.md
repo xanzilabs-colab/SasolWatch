@@ -22,10 +22,10 @@ The Leaflet map uses OpenStreetMap tiles with attribution displayed on the map; 
    NEXT_PUBLIC_SUPABASE_URL=
    NEXT_PUBLIC_SUPABASE_ANON_KEY=
    NEXT_PUBLIC_NODE_ID=sasolsniff-node-01
-   OPEN_METEO_API_KEY=
+   OPENWEATHER_API_KEY=
    ```
 
-   The Open-Meteo key is optional. `.env.local` is ignored by Git.
+   Set your OpenWeather API key as `OPENWEATHER_API_KEY`. `.env.local` is ignored by Git; the key stays on the server and is never sent to the browser.
 
 4. Start the development server:
 
@@ -42,9 +42,9 @@ The Leaflet map uses OpenStreetMap tiles with attribution displayed on the map; 
 - **Demo:** choose `?demo=1` to show the local demo checklist and rehearsal table.
 - **Event report:** select Report on an event to open its printable report at `/report/[eventId]`.
 
-The dashboard includes station overview, plume map, trends, events and alerts, a searchable source registry, device status, event reports, a prototype guide, and connection settings. Live mode shows the ESP32's raw MQ response and baseline, potentiometer ADC and compass direction, DHT readings, and Wi-Fi signal; event and map analysis uses the device direction. Wind speed and local weather are identified separately as Open-Meteo data. This hardware does not measure individual pollutant concentrations or AQI, so live mode does not display invented values. CSV exports use the readings, events, or alert records currently loaded by the dashboard.
+The dashboard includes station overview, plume map, trends, events and alerts, a searchable source registry, device status, event reports, a prototype guide, and connection settings. Live mode shows the ESP32's raw MQ response and baseline, potentiometer ADC and compass direction, DHT readings, and Wi-Fi signal; event and map analysis uses the device direction. Wind speed and local weather are identified separately as OpenWeather data. This hardware does not measure individual pollutant concentrations or AQI, so live mode does not display invented values. CSV exports use the readings, events, or alert records currently loaded by the dashboard.
 
-Weather is loaded from Open-Meteo by the server route at `/api/weather` when no weather snapshot is present in the sensor fusion record. It never replaces the direction received from the device potentiometer.
+Weather is loaded from OpenWeather by the server route at `/api/weather` when no weather snapshot is present in the sensor fusion record. The API key remains server-side and weather never replaces the direction received from the device potentiometer. OpenWeather attribution is displayed in the dashboard; review OpenWeather's ODbL terms before redistributing stored weather data.
 
 ## Backend and device
 

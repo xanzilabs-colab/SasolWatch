@@ -28,11 +28,11 @@
 
 Do not send made-up readings to the deployed ingest endpoint for testing; each accepted payload is stored as a device reading and can create a real event. Use **Run scenario** in the dashboard for local-only previews.
 
-## 1b. Local weather (Open-Meteo, free)
+## 1b. Local weather (OpenWeather)
 
-- The function pulls current weather for the node's coordinates from Open-Meteo (no key needed for non-commercial use) and caches it in `weather_cache` for 10 minutes. If you already ran the first `schema.sql`, run `supabase/002_weather.sql` once.
-- Open-Meteo provides local weather context and wind speed separately. The live wind direction always comes from the device's potentiometer (`wind_from_deg`); weather can never override it. If no weather speed is available, source travel time is left unavailable rather than guessed.
-- Open-Meteo's free tier is for non-commercial use. A commercial product needs their paid API key (`OPEN_METEO_API_KEY`). Check their terms before launch.
+- The function pulls current weather for the node's coordinates from OpenWeather and caches it in `weather_cache` for 10 minutes. If you already ran the first `schema.sql`, run `supabase/002_weather.sql` once.
+- OpenWeather provides local weather context and wind speed separately. The live wind direction always comes from the device's potentiometer (`wind_from_deg`); weather can never override it. If no weather speed is available, source travel time is left unavailable rather than guessed.
+- Set the server-side `OPENWEATHER_API_KEY` for the dashboard and the `OPENWEATHER_API_KEY` Supabase Edge Function secret. Keep the key out of browser code and Git. OpenWeather attribution is shown in the dashboard; review its ODbL terms before redistributing stored weather data.
 
 ## 2. WhatsApp alerts (Zernio)
 

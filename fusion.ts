@@ -179,7 +179,7 @@ export function fuse(p: {
       compass_from: compass(windFrom), compass_to: compass(windTo),
       steadiness: Math.round(steady * 100) / 100, sector_halfwidth_deg: halfWidth,
       speed_ms: ws == null ? null : Math.round(ws * 10) / 10, speed_assumed: simulated && wsWeather === null,
-      speed_source: wsWeather === null ? (simulated ? "simulated default" : "unavailable") : "open-meteo",
+      speed_source: wsWeather === null ? (simulated ? "simulated default" : "unavailable") : weather?.source ?? "weather API",
       dir_source: "device potentiometer",
     },
     weather: weather ? {

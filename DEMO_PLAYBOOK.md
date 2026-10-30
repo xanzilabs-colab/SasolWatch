@@ -7,7 +7,7 @@
 - DHT11: on-node temperature and humidity, when the sensor returns valid values.
 - ESP32: Wi-Fi signal strength.
 
-The node has no PM2.5, PM10, NO₂, SO₂, H₂S, CO or VOC analyzer. Live mode therefore shows no pollutant concentrations or AQI. Open-Meteo weather is clearly separated from the node's measurements. Source classification is a rule-based estimate, and source locations may be illustrative.
+The node has no PM2.5, PM10, NO₂, SO₂, H₂S, CO or VOC analyzer. Live mode therefore shows no pollutant concentrations or AQI. OpenWeather conditions are clearly separated from the node's measurements and attributed in the dashboard. Source classification is a rule-based estimate, and source locations may be illustrative.
 
 ## Safety
 

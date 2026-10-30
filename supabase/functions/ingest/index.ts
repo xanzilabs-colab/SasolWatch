@@ -18,8 +18,7 @@ const TEMPLATE_LANG = Deno.env.get("ZERNIO_TEMPLATE_LANG") ?? "en";
 const ALERT_DRY_RUN = (Deno.env.get("ALERT_DRY_RUN") ?? "true") !== "false";
 const ALERT_MIN_SEVERITY = Deno.env.get("ALERT_MIN_SEVERITY") ?? "moderate";
 const ALERT_COOLDOWN_MIN = Number(Deno.env.get("ALERT_COOLDOWN_MIN") ?? "10");
-// Open-Meteo is free for non-commercial use without a key. For commercial use set OPEN_METEO_API_KEY.
-const OPEN_METEO_API_KEY = Deno.env.get("OPEN_METEO_API_KEY") ?? "";
+const OPENWEATHER_API_KEY = Deno.env.get("OPENWEATHER_API_KEY") ?? Deno.env.get("OPEN_METEO_API_KEY") ?? "";
 const WEATHER_TTL_MIN = Number(Deno.env.get("WEATHER_TTL_MIN") ?? "10");
 
 const sb = createClient(SUPABASE_URL, SERVICE_KEY, { auth: { persistSession: false } });
@@ -66,37 +65,40 @@ function windSteadiness(degs: number[]) {
   return clamp(Math.hypot(x, y), 0, 1);
 }
 
-// ---------- local weather (Open-Meteo, cached) ----------
+// ---------- local weather (OpenWeather, cached) ----------
 async function getWeather(node: any) {
   try {
     const { data: row } = await sb.from("weather_cache").select("*").eq("node_id", node.id).maybeSingle();
     if (row && Date.now() - new Date(row.fetched_at).getTime() < WEATHER_TTL_MIN * 60_000) return row.data;
 
-    const base = OPEN_METEO_API_KEY ? "https://customer-api.open-meteo.com/v1/forecast" : "https://api.open-meteo.com/v1/forecast";
-    const url = `${base}?latitude=${node.lat}&longitude=${node.lon}` +
-      `&current=temperature_2m,relative_humidity_2m,precipitation,pressure_msl,cloud_cover,wind_speed_10m,wind_direction_10m,wind_gusts_10m` +
-      `&wind_speed_unit=ms&timezone=Africa%2FJohannesburg` + (OPEN_METEO_API_KEY ? `&apikey=${OPEN_METEO_API_KEY}` : "");
+    if (!OPENWEATHER_API_KEY) throw new Error("OpenWeather API key is not configured");
+    const url = new URL("https://api.openweathermap.org/data/2.5/weather");
+    url.searchParams.set("lat", String(node.lat));
+    url.searchParams.set("lon", String(node.lon));
+    url.searchParams.set("units", "metric");
+    url.searchParams.set("appid", OPENWEATHER_API_KEY);
     const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
-    if (!res.ok) throw new Error("open-meteo " + res.status);
+    if (!res.ok) throw new Error("openweather " + res.status);
     const j = await res.json();
-    const c = j.current;
+    if (!j.main || !j.wind) throw new Error("openweather response missing current conditions");
+    const precipitation = j.rain?.["1h"] ?? j.rain?.["3h"] ?? 0;
     const data = {
-      source: "open-meteo",
-      observed_at: c.time,
-      temperature_c: c.temperature_2m,
-      humidity_pct: c.relative_humidity_2m,
-      precipitation_mm: c.precipitation,
-      pressure_hpa: c.pressure_msl,
-      cloud_cover_pct: c.cloud_cover,
-      wind_speed_ms: c.wind_speed_10m,
-      wind_gust_ms: c.wind_gusts_10m,
-      wind_dir_deg: c.wind_direction_10m,
+      source: "openweather",
+      observed_at: j.dt ? new Date(j.dt * 1000).toISOString() : null,
+      temperature_c: j.main.temp,
+      humidity_pct: j.main.humidity,
+      precipitation_mm: precipitation,
+      pressure_hpa: j.main.pressure,
+      cloud_cover_pct: j.clouds?.all ?? null,
+      wind_speed_ms: j.wind.speed,
+      wind_gust_ms: j.wind.gust ?? null,
+      wind_dir_deg: j.wind.deg ?? null,
       fetched_at: new Date().toISOString(),
     };
     await sb.from("weather_cache").upsert({ node_id: node.id, fetched_at: data.fetched_at, data });
     return data;
   } catch (e) {
-    console.error("weather fetch failed", e);
+    console.error("weather fetch failed", e instanceof Error ? e.name : "Unknown error");
     const { data: row } = await sb.from("weather_cache").select("data").eq("node_id", node.id).maybeSingle();
     return row?.data ? { ...row.data, stale: true } : null; // fall back to the last good value, or none
   }
@@ -222,7 +224,7 @@ function fuse(p: {
       compass_from: compass(windFrom), compass_to: compass(windTo),
       steadiness: Math.round(steady * 100) / 100, sector_halfwidth_deg: halfWidth,
       speed_ms: ws == null ? null : Math.round(ws * 10) / 10, speed_assumed: false,
-      speed_source: wsWeather === null ? "unavailable" : "open-meteo",
+      speed_source: wsWeather === null ? "unavailable" : weather?.source ?? "weather API",
       dir_source: "device potentiometer",
     },
     weather: weather ? {

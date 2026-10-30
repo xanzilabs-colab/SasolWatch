@@ -618,7 +618,7 @@ export function Dashboard({
             <div className="guide-grid">
               {[
                 ["01", "Sensor node", "The ESP32 reports gas-sensor response, temperature, humidity, wind-vane direction and signal strength."],
-                ["02", "Data and weather", "Supabase stores the ESP32 readings. Open-Meteo weather is shown separately; the wind direction always comes from the device potentiometer."],
+                ["02", "Data and weather", "Supabase stores the ESP32 readings. OpenWeather conditions are shown separately; wind direction always comes from the device potentiometer."],
                 ["03", "Surge detection", "Rules compare gas response to a clean-air baseline and look at the change over time."],
                 ["04", "Wind-sector analysis", "When a surge is detected, the dashboard checks illustrative registered source locations in the upwind sector."],
                 ["05", "Estimates and alerts", "Live mode shows no invented pollutant concentrations or AQI. The optional simulator is local and starts only when you choose it. Notification records may be previews; inspect their status."],
